@@ -1,0 +1,27 @@
+# --- Global ---
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+.env
+.env.*       # keep real envs out; we'll add *.example files
+
+# --- Node / Vite (frontend) ---
+asset-pwa/node_modules/
+asset-pwa/dist/
+
+# --- Python / FastAPI (backend) ---
+asset-api/.venv/
+asset-api/__pycache__/
+asset-api/*.pyc
+asset-api/instance/
+asset-api/uploads/        # user-uploaded images
+asset-api/.pytest_cache/
+
+# --- Tauri (if you keep it later) ---
+asset-pwa/src-tauri/target/
+asset-pwa/src-tauri/gen/
+
+# --- IDE ---
+.vscode/
+.idea/

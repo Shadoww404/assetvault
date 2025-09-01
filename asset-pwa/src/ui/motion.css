@@ -1,0 +1,33 @@
+/* ===== Preloader ===== */
+.preloader{
+  position: fixed; inset: 0; display: grid; place-items: center; z-index: 1000;
+  background: rgba(2,6,23,.6);
+  backdrop-filter: blur(2px);
+  animation: fadeIn .24s ease-out both;
+}
+.pl-card{
+  display:flex; align-items:center; gap:14px;
+  padding:14px 16px; border-radius:14px; background: #0b1329; color:#e5e7eb;
+  border:1px solid rgba(255,255,255,.08); box-shadow: 0 10px 40px rgba(0,0,0,.35);
+}
+.spinner{
+  width:22px; height:22px; border-radius:50%;
+  border: 3px solid rgba(255,255,255,.2); border-top-color: #60a5fa;
+  animation: spin .8s linear infinite;
+}
+
+/* ===== Animations ===== */
+@keyframes spin { to { transform: rotate(360deg) } }
+@keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+@keyframes fadeOut { from { opacity: 1 } to { opacity: 0 } }
+@keyframes scaleIn { from { opacity:0; transform: translateY(6px) scale(.98) } to { opacity:1; transform: translateY(0) scale(1) } }
+@keyframes scaleOut { from { opacity:1; transform: translateY(0) scale(1) } to { opacity:0; transform: translateY(6px) scale(.98) } }
+
+.page-in { animation: fadeIn .28s ease-out both; }
+.modal-in    { animation: scaleIn .22s ease-out both; }
+.modal-out   { animation: scaleOut .18s ease-in  both; }
+.backdrop-in { animation: fadeIn  .18s ease-out both; }
+.backdrop-out{ animation: fadeOut .14s ease-in  both; }
+
+/* smoother */
+.page-in, .preview, .preview-backdrop { will-change: opacity, transform; }

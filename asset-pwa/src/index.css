@@ -1,0 +1,457 @@
+/* ===========
+   Base & Reset
+   =========== */
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif;
+  color: #0f172a;                 /* slate-900 */
+  background: #f6f7fb;            /* app light bg */
+  line-height: 1.45;
+}
+
+h1,h2,h3,h4 { margin: 0 0 10px; }
+p { margin: 0 0 10px; }
+small { font-size: 12px; }
+.muted { color: #6b7280; }        /* slate-500 */
+
+/* utility */
+.row { display: flex; gap: 10px; align-items: center; }
+.row.between { justify-content: space-between; }
+.row.end { justify-content: flex-end; }
+
+/* ===========
+   Buttons
+   =========== */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 36px; padding: 0 14px; border-radius: 10px;
+  border: 1px solid #d1d5db; background: #fff; color: #111827;
+  cursor: pointer;
+  transition: box-shadow .15s ease, transform .02s ease, background .15s;
+}
+.btn:hover { box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+.btn:active { transform: translateY(1px); }
+.btn.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+.btn.ghost { background: transparent; border-color: #e5e7eb; color: #374151; }
+.btn.sm { height: 30px; padding: 0 10px; font-size: 12px; }
+.btn.full { width: 100%; }
+.btn.loading { opacity: .7; pointer-events: none; }
+
+/* chips, pills, count */
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 24px; padding: 0 10px; border-radius: 999px;
+  background: #eef2ff; color: #3730a3; font-size: 12px; border: 1px solid #e0e7ff;
+}
+.pill {
+  display: inline-block; font-size: 12px; color: #2563eb; background: #eff6ff;
+  border: 1px solid #bfdbfe; padding: 2px 8px; border-radius: 999px;
+}
+
+/* ===========
+   Topbar & Shell
+   =========== */
+.app-shell { display: grid; grid-template-rows: auto 1fr; min-height: 100%; }
+
+.topbar {
+  position: sticky; top: 0; z-index: 10;
+  display: grid; grid-template-columns: 1fr auto auto;
+  gap: 14px; align-items: center;
+  padding: 12px 16px;
+  background: #ffffff;
+  border-bottom: 1px solid #e5e7eb;
+  box-shadow: 0 2px 10px rgba(0,0,0,.03);
+}
+.brand { display:flex; align-items:center; gap:10px; font-size: 14px; }
+.brand .logo { font-size: 18px; }
+
+.tabs { display: inline-flex; gap: 6px; background: #f3f4f6; padding: 4px; border-radius: 10px; border: 1px solid #e5e7eb; }
+.tab {
+  display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 8px; color: #374151; text-decoration: none;
+}
+.tab.active { background: #ffffff; color: #111827; border: 1px solid #e5e7eb; }
+
+.main { padding: 18px; }
+
+/* ===========
+   Login (light with faded background image)
+   =========== */
+.login-wrap {
+  position: relative;                 /* allow pseudo elements */
+  min-height: 100svh;
+  display: grid;
+  place-items: center;
+  padding: 40px 16px;
+  background: #f8fafc;                /* base color under image */
+  overflow: hidden;                    /* hide image edges after blur/scale */
+}
+
+/* background image layer */
+.login-wrap::before {
+  content: "";
+  position: absolute; inset: 0;
+  background-image: url("/login-bg.jpg"); /* file in /public */
+  background-size: cover;
+  background-position: center;
+  /* soft, subtle look: */
+  filter: saturate(0.9) contrast(5.05) brightness(3.9) blur(2px);
+  opacity: 0.9;                       /* <— adjust 0.15–0.35 to taste */
+  transform: scale(1.05);              /* avoid edges after blur */
+}
+
+/* light overlay to keep form readable on any image */
+.login-wrap::after {
+  content: "";
+  position: absolute; inset: 0;
+  background: linear-gradient(
+    180deg,
+    rgba(248, 250, 252, 0.65),
+    rgba(248, 250, 252, 0.35)
+  );
+}
+
+/* the card stays above the background layers */
+.login-card {
+  position: relative; z-index: 1;
+  width: 100%;
+  max-width: 420px;
+  padding: 28px;
+  border-radius: 16px;
+  background: #ffffff;
+  color: #0f172a;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 12px 34px rgba(2, 6, 23, 0.08);
+}
+
+.login-head { text-align: center; margin-bottom: 18px; }
+.login-head .logo { font-size: 28px; margin-bottom: 6px; }
+.login-head h1 { margin: 0; font-size: 22px; }
+.login-head .muted { color: #6b7280; }
+
+.login-card .field { display: grid; gap: 6px; margin: 12px 0; }
+.login-card .field label { font-size: 12px; color: #6b7280; }
+.login-card input {
+  background: #ffffff;
+  color: #111827;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 10px 12px;
+  outline: none;
+}
+.login-card input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+
+.login-card .alert.error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+  padding: 10px 12px;
+  border-radius: 10px;
+  margin: 10px 0 14px;
+}
+
+
+/* ===========
+   Items page (Add form — light theme, restored sizing)
+   =========== */
+.add-wrap { max-width: 1200px; margin: 0 auto; }
+.add-head { display:flex; align-items:flex-start; justify-content:space-between; margin-bottom: 14px; }
+.add-head h2 { font-size: 22px; }
+.count { display:flex; align-items:center; }
+
+.add-form { display: grid; gap: 16px; }
+
+.card.section {
+  background: #ffffff; border: 1px solid #e5e7eb; border-radius: 14px;
+  padding: 16px; box-shadow: 0 4px 18px rgba(0,0,0,.03);
+}
+.section-title { font-size: 14px; color: #374151; margin-bottom: 8px; }
+
+.grid2 {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
+}
+@media (max-width: 900px) {
+  .grid2 { grid-template-columns: 1fr; }
+}
+
+.card.section .field label { color: #4b5563; } /* darker than muted */
+.card.section .field input,
+.card.section .field textarea,
+.card.section .field select {
+  background: #ffffff; color: #111827; border: 1px solid #e5e7eb;
+}
+.card.section .field input:focus,
+.card.section .field textarea:focus,
+.card.section .field select:focus {
+  border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.15);
+}
+.err { color: #b91c1c; font-size: 12px; }
+
+/* Dropzone */
+.dropzone {
+  display:flex; gap:16px; align-items:center;
+  padding: 16px; border: 2px dashed #cbd5e1; border-radius: 12px;
+  background: #f9fafb; cursor: pointer;
+}
+.dropzone:hover { background: #f3f4f6; }
+.dz-ico { font-size: 24px; }
+.dz-text { color: #374151; }
+.dz-text .link { text-decoration: underline; color: #2563eb; cursor: pointer; }
+
+.thumb-grid { margin-top: 12px; display:grid; gap:12px; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+.thumb-item { position: relative; border:1px solid #e5e7eb; border-radius: 10px; background: #fff; overflow: hidden; }
+.thumb-item img { width: 100%; height: 100px; object-fit: cover; display:block; }
+.thumb-item .remove { position: absolute; top:6px; right:6px; }
+
+/* Form actions */
+.actions { display:flex; gap:8px; }
+
+/* Toast */
+.toast {
+  position: fixed; bottom: 18px; right: 18px; z-index: 20;
+  background: #16a34a; color: #fff; padding: 10px 14px; border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(22,163,74,.35);
+}
+
+/* ===========
+   Entries page (Table — light theme, restored sizing)
+   =========== */
+.entries { max-width: 1200px; margin: 0 auto; }
+.toolbar { margin-bottom: 10px; }
+.toolbar h3 { font-size: 20px; }
+
+.search {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 6px 10px;
+}
+.search input {
+  border: none; outline: none; background: transparent;
+  min-width: 240px; color:#111827;
+}
+.search-ico { opacity: .7; }
+
+.table-wrap.pro {
+  overflow: auto; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 14px;
+  box-shadow: 0 4px 18px rgba(0,0,0,.03);
+}
+.table.pro {
+  width: 100%; border-collapse: separate; border-spacing: 0; font-size: 14px;
+}
+.table.pro thead th {
+  position: sticky; top: 0; z-index: 1; text-align: left;
+  background: #f9fafb; color: #4b5563; font-weight: 600;
+  padding: 12px; border-bottom: 1px solid #e5e7eb;
+}
+.table.pro tbody td {
+  padding: 12px; border-bottom: 1px solid #f1f5f9;
+  color: #111827;
+}
+.table.pro tbody tr:nth-child(odd) td { background: #fcfdff; }
+.table.pro tbody tr:hover td { background: #eef2ff; }
+.row-click { cursor: pointer; }
+
+/* ===========
+   Preview Modal (light)
+   =========== */
+.preview-wrap {
+  position: fixed; inset: 0; z-index: 40; display: grid; place-items: center;
+}
+.preview-backdrop {
+  position: absolute; inset: 0; background: rgba(15,23,42,.45);
+  backdrop-filter: blur(2px);
+}
+.preview {
+  position: relative; z-index: 1; width: min(1000px, 96vw); max-height: 90vh;
+  background: #ffffff; border: 1px solid #e5e7eb; border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.25);
+  display: grid; grid-template-rows: auto 1fr;
+}
+.preview-head {
+  display:flex; align-items:center; justify-content: space-between;
+  padding: 12px 14px; border-bottom: 1px solid #e5e7eb;
+}
+.preview-head .muted { font-size: 12px; }
+.preview-body {
+  display:grid; grid-template-columns: 1.2fr 1fr; gap: 14px; padding: 14px; overflow: hidden;
+}
+@media (max-width: 900px) { .preview-body { grid-template-columns: 1fr; } }
+
+.viewer { display: grid; gap: 10px; }
+.viewer .main {
+  position: relative; background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 12px;
+  display: grid; place-items: center; min-height: 320px; overflow: hidden;
+}
+.viewer .main img { max-width: 100%; max-height: 70vh; object-fit: contain; display:block; }
+.viewer .main .noimg { color: #6b7280; }
+
+.viewer .nav {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  width: 36px; height: 36px; border-radius: 999px; border: 1px solid #e5e7eb;
+  background: #fff; color: #111827; cursor: pointer;
+  display:grid; place-items:center;
+  box-shadow: 0 2px 10px rgba(0,0,0,.1);
+}
+.viewer .nav.prev { left: 10px; }
+.viewer .nav.next { right: 10px; }
+
+.thumbs { display:flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+.tbtn {
+  width: 56px; height: 56px; border-radius: 10px; border: 2px solid transparent; overflow: hidden;
+  background: #fff; cursor: pointer;
+}
+.tbtn img { width: 100%; height: 100%; object-fit: cover; display:block; }
+.tbtn.active { border-color: #2563eb; }
+
+.open-full { display:flex; justify-content:flex-end; }
+.open-full .btn { height: 32px; }
+
+.details { display:grid; gap: 12px; overflow: auto; }
+.kv {
+  display:grid; grid-template-columns: 140px 1fr; gap: 8px 12px; align-items: center;
+  padding: 10px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 12px;
+}
+.kv label { color: #4b5563; font-size: 12px; }
+.note-box {
+  min-height: 80px; background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 10px;
+}
+
+/* ===========
+   Skeletons (light only)
+   =========== */
+.skel { position: relative; overflow: hidden; background: #e5e7eb; border-radius: 6px; }
+.skel::after{
+  content:""; position:absolute; inset:0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.7), transparent);
+  animation: shimmer 1.4s infinite; transform: translateX(-100%);
+}
+@keyframes shimmer { 100% { transform: translateX(100%) } }
+/* === Overrides: restore Core Details grid look (Items page only) === */
+.add-wrap { max-width: 1200px; margin: 0 auto; }
+
+.add-form .section-title {
+  font-size: 14px;
+  color: #374151;
+  margin-bottom: 10px;
+}
+
+/* Grid sizing */
+.add-form .grid2 {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(320px, 1fr));
+}
+@media (max-width: 900px) {
+  .add-form .grid2 { grid-template-columns: 1fr; }
+}
+
+/* Field block spacing */
+.add-form .field {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+/* Labels */
+.add-form .field label {
+  font-size: 13px;
+  color: #374151;      /* darker than muted */
+  font-weight: 500;
+}
+
+/* Inputs, selects, textareas — restore “modern” size & look */
+.add-form .field input,
+.add-form .field select {
+  height: 44px;
+  padding: 0 12px;
+  background: #ffffff;
+  color: #111827;
+  border: 1px solid #d1d5db;     /* slightly stronger border */
+  border-radius: 12px;           /* softer corners */
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.add-form .field textarea {
+  min-height: 110px;
+  padding: 10px 12px;
+  background: #ffffff;
+  color: #111827;
+  border: 1px solid #d1d5db;
+  border-radius: 12px;
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+/* Focus ring */
+.add-form .field input:focus,
+.add-form .field select:focus,
+.add-form .field textarea:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+
+/* Placeholders */
+.add-form .field input::placeholder,
+.add-form .field textarea::placeholder {
+  color: #9ca3af;
+}
+
+/* Error text (unchanged behavior, just ensure readable on light) */
+.add-form .err {
+  color: #b91c1c;
+  font-size: 12px;
+}
+
+/* Dropzone stays consistent with this look */
+.add-form .dropzone {
+  border: 2px dashed #cbd5e1;
+  background: #f9fafb;
+  border-radius: 12px;
+}
+.add-form .dropzone:hover { background: #f3f4f6; }
+/* Keep password input IDENTICAL size to other inputs */
+.field .pw-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.field .pw-wrap .pw-input {
+  width: 100%;
+  display: block;
+  /* add only INNER space so the icon doesn't overlap text; outer size unchanged */
+  padding-right: 42px;    /* tweak if your input has bigger border-radius/line-height */
+}
+
+/* The eye button sits inside the right edge of the input */
+.field .pw-wrap .pw-toggle {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+
+  /* make it look like an icon, not a button */
+  border: 0;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #666;
+  cursor: pointer;
+}
+
+.field .pw-wrap .pw-toggle:hover { color: #333; }
+.field .pw-wrap .pw-toggle:focus-visible {
+  outline: 2px solid #3b82f6;  /* match your theme focus color */
+  border-radius: 6px;
+}
+
