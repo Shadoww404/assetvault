@@ -17,8 +17,14 @@ export default function Login({ onLoggedIn }) {
     setBusy(true);
     setError("");
     try {
-      const token = await login(form.username, form.password);
+      const token = await login(form.username.trim(), form.password);
+      // Keep compatibility with current api.js (reads localStorage)
       localStorage.setItem("av_token", token);
+      // Also mirror to sessionStorage (optional, extra safety)
+      sessionStorage.setItem("av_token", token);
+      // Notify other tabs they should consider themselves logged in (optional)
+      localStorage.setItem("av_login", String(Date.now()));
+
       onLoggedIn?.();
       navigate("/", { replace: true });
     } catch (err) {
@@ -46,50 +52,62 @@ export default function Login({ onLoggedIn }) {
             value={form.username}
             onChange={(e) => setField("username", e.target.value)}
             placeholder="your.username"
+            autoComplete="username"
           />
         </div>
 
         <div className="field">
-  <label>Password</label>
+          <label>Password</label>
+          {/* wrapper keeps the input full width, button sits inside */}
+          <div className="pw-wrap">
+            <input
+              type={showPwd ? "text" : "password"}
+              className="pw-input"
+              value={form.password}
+              onChange={(e) => setField("password", e.target.value)}
+              placeholder="••••••••"
+              autoComplete="current-password"
+            />
 
-  {/* wrapper keeps the input full width, button sits ON TOP (inside) */}
-  <div className="pw-wrap">
-    <input
-      type={showPwd ? "text" : "password"}
-      className="pw-input"
-      value={form.password}
-      onChange={(e) => setField("password", e.target.value)}
-      placeholder="••••••••"
-    />
-
-    <button
-      type="button"
-      className="pw-toggle"
-      onClick={() => setShowPwd(s => !s)}
-      aria-label={showPwd ? "Hide password" : "Show password"}
-      title={showPwd ? "Hide" : "Show"}
-    >
-      {/* Eye / Eye-off icons */}
-      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-        {showPwd ? (
-          // eye-off
-          <g fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M3 3l18 18" />
-            <path d="M10.58 10.58a3 3 0 004.24 4.24" />
-            <path d="M17.94 17.94C15.9 19 13.54 19.5 12 19.5 6.5 19.5 3 12 3 12c.66-1.24 1.61-2.61 2.87-3.86" />
-          </g>
-        ) : (
-          // eye
-          <g fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M1 12s3.5-7.5 11-7.5 11 7.5 11 7.5-3.5 7.5-11 7.5S1 12 1 12Z" />
-            <circle cx="12" cy="12" r="3.5" />
-          </g>
-        )}
-      </svg>
-    </button>
-  </div>
-</div>
-
+            <button
+              type="button"
+              className="pw-toggle"
+              onClick={() => setShowPwd((s) => !s)}
+              aria-label={showPwd ? "Hide password" : "Show password"}
+              title={showPwd ? "Hide" : "Show"}
+            >
+              {/* Eye / Eye-off icons */}
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                {showPwd ? (
+                  // eye-off
+                  <g
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M3 3l18 18" />
+                    <path d="M10.58 10.58a3 3 0 004.24 4.24" />
+                    <path d="M17.94 17.94C15.9 19 13.54 19.5 12 19.5 6.5 19.5 3 12 3 12c.66-1.24 1.61-2.61 2.87-3.86" />
+                  </g>
+                ) : (
+                  // eye
+                  <g
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M1 12s3.5-7.5 11-7.5 11 7.5 11 7.5-3.5 7.5-11 7.5S1 12 1 12Z" />
+                    <circle cx="12" cy="12" r="3.5" />
+                  </g>
+                )}
+              </svg>
+            </button>
+          </div>
+        </div>
 
         <button className={`btn primary full ${busy ? "loading" : ""}`} disabled={busy}>
           {busy ? "Signing in…" : "Sign in"}

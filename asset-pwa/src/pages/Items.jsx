@@ -1,144 +1,455 @@
-import { useRef, useState } from "react";
-import { createItem, uploadPhotos } from "../api";
+// src/pages/Items.jsx
+import { useEffect, useRef, useState } from "react";
+import {
+  createItem,
+  uploadPhotos,
+  listPhotos,
+  deletePhoto,
+  listDepartments,
+  listPeople,
+  searchItems,
+  searchItemsLite,
+  transferAssignment,
+  getActiveAssignment,
+} from "../api";
+import FancySelect from "../ui/FancySelect.jsx";
 
-export default function Items() {
-  const [form, setForm] = useState({
-    item_id: "", name: "", quantity: 1, serial_no: "",
-    model_no: "", department: "", owner: "",
-    transfer_from: "", transfer_to: "", notes: "",
-  });
-  const [errors, setErrors] = useState({});
-  const [saving, setSaving] = useState(false);
-  const [toast, setToast] = useState("");
+function cx(...a) { return a.filter(Boolean).join(" "); }
 
-  const [files, setFiles] = useState([]);
-  const [previews, setPreviews] = useState([]);
-  const fileRef = useRef(null);
+export default function ItemsPage() {
+  // ----- Core details form -----
+  const [name, setName] = useState("");
+  const [qty, setQty] = useState(1);
+  const [serial, setSerial] = useState("");
+  const [model, setModel] = useState("");
+  const [notes, setNotes] = useState("");
 
-  const setField = (k, v) => setForm((s) => ({ ...s, [k]: v }));
-  const addFiles = (list) => {
-    const incoming = Array.from(list || []);
-    if (!incoming.length) return;
-    const room = Math.max(0, 5 - files.length);
-    const take = incoming.slice(0, room);
-    const urls = take.map((f) => URL.createObjectURL(f));
-    setFiles((f) => [...f, ...take]);
-    setPreviews((p) => [...p, ...urls]);
-  };
+  const [deps, setDeps] = useState([]);
+  const [depId, setDepId] = useState("");
 
-  const onDrop = (e) => { e.preventDefault(); e.stopPropagation(); addFiles(e.dataTransfer.files); };
-  const onRemove = (idx) => {
-    const url = previews[idx]; try { URL.revokeObjectURL(url); } catch {}
-    setPreviews((p) => p.filter((_, i) => i !== idx));
-    setFiles((f) => f.filter((_, i) => i !== idx));
-  };
+  // Owner picker
+  const [ownerQ, setOwnerQ] = useState("");
+  const [ownerOpts, setOwnerOpts] = useState([]);
+  const [ownerPick, setOwnerPick] = useState(null);
 
-  const validate = () => {
-    const errs = {};
-    if (!form.item_id?.trim()) errs.item_id = "Item ID is required";
-    if (!form.name?.trim()) errs.name = "Name is required";
-    if (String(form.quantity).trim() === "" || Number(form.quantity) < 0) errs.quantity = "Quantity must be 0+";
-    setErrors(errs);
-    return Object.keys(errs).length === 0;
-  };
+  // After create
+  const [createdId, setCreatedId] = useState("");
+  const [photos, setPhotos] = useState([]);
 
-  const reset = () => {
-    setForm({ item_id:"", name:"", quantity:1, serial_no:"", model_no:"", department:"", owner:"", transfer_from:"", transfer_to:"", notes:"" });
-    previews.forEach((u) => { try { URL.revokeObjectURL(u); } catch {} });
-    setPreviews([]); setFiles([]); setErrors({});
-  };
+  // Busy / errors
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
 
-  const onSubmit = async (e) => {
+  // Photo inputs (two cards)
+  const addPhotosCoreRef = useRef(null);
+  const addPhotosTransferRef = useRef(null);
+
+  // ----- Transfer card -----
+  const [tSerial, setTSerial] = useState("");
+  const [tEquipName, setTEquipName] = useState("");
+  const [tFromQ, setTFromQ] = useState("");
+  const [tFromOpts, setTFromOpts] = useState([]);
+  const [tFrom, setTFrom] = useState(null);
+  const [tToQ, setTToQ] = useState("");
+  const [tToOpts, setTToOpts] = useState([]);
+  const [tTo, setTTo] = useState(null);
+  const [tDue, setTDue] = useState("");
+  const [tNotes, setTNotes] = useState("");
+  const [tItemResolved, setTItemResolved] = useState(null); // { item_id, name }
+  const [tBusy, setTBusy] = useState(false);
+  const [tFromResolvedLabel, setTFromResolvedLabel] = useState("");
+
+  // --- Load deps once
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await listDepartments();
+        setDeps(data);
+      } catch {}
+    })();
+  }, []);
+
+  // --- Owner typeahead
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      if (!ownerQ || ownerQ.length < 2) { setOwnerOpts([]); return; }
+      try {
+        const { data } = await listPeople({ q: ownerQ, limit: 8 });
+        setOwnerOpts(data);
+      } catch {}
+    }, 220);
+    return () => clearTimeout(timer);
+  }, [ownerQ]);
+
+  // Auto department when owner picked
+  useEffect(() => {
+    if (!ownerPick) return;
+    const match = deps.find(d => d.name === ownerPick.department_name);
+    if (match) setDepId(match.id);
+  }, [ownerPick, deps]);
+
+  // Refresh photos when we have an item id
+  useEffect(() => {
+    if (!createdId) return;
+    (async () => {
+      try {
+        const { data } = await listPhotos(createdId);
+        setPhotos(data);
+      } catch {}
+    })();
+  }, [createdId]);
+
+  // ----- Helpers -----
+  async function resolveItemBySerial(serialNo) {
+    if (!serialNo) return null;
+    const { data } = await searchItems(serialNo);
+    const exact = data.find(x => (x.serial_no || "").toLowerCase() === serialNo.toLowerCase());
+    if (exact) return { item_id: exact.item_id, name: exact.name };
+    // fall back to first LIKE result
+    if (data[0]) return { item_id: data[0].item_id, name: data[0].name };
+    return null;
+  }
+
+  // ----- Create item -----
+  const onCreate = async (e) => {
     e.preventDefault();
-    if (!validate()) return;
-    setSaving(true);
+    setErr(""); setBusy(true);
     try {
       const fd = new FormData();
-      Object.entries(form).forEach(([k, v]) => fd.append(k, v ?? ""));
-      await createItem(fd);
-      if (files.length) await uploadPhotos(form.item_id, files.slice(0, 5));
-      setToast("Saved ✓"); setTimeout(() => setToast(""), 1600);
-      reset();
-    } finally { setSaving(false); }
+      fd.set("name", name.trim());
+      fd.set("quantity", String(qty || 0));
+      fd.set("serial_no", serial.trim()); // you want Serial required in UI
+      if (model.trim())  fd.set("model_no", model.trim());
+      const depName = deps.find(d => d.id === depId)?.name || "";
+      if (depName) fd.set("department", depName);
+      if (ownerPick) fd.set("owner", ownerPick.full_name);
+      else if (ownerQ.trim()) fd.set("owner", ownerQ.trim());
+      if (notes.trim()) fd.set("notes", notes.trim());
+
+      const { data } = await createItem(fd);
+      setCreatedId(data.item_id);
+      setName(""); setQty(1); setSerial(""); setModel("");
+      setOwnerPick(null); setOwnerQ("");
+    } catch (e2) {
+      setErr(e2?.response?.data?.detail || "Failed to save");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onUploadCore = async (files) => {
+    if (!createdId || !files?.length) return;
+    setBusy(true);
+    try {
+      await uploadPhotos(createdId, files);
+      const { data } = await listPhotos(createdId);
+      setPhotos(data);
+    } catch (e2) {
+      setErr(e2?.response?.data?.detail || "Photo upload failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onDeletePhoto = async (pid) => {
+    if (!createdId) return;
+    setBusy(true);
+    try {
+      await deletePhoto(createdId, pid);
+      const { data } = await listPhotos(createdId);
+      setPhotos(data);
+    } catch {
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // ----- Transfer: typeaheads -----
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      if (!tFromQ || tFromQ.length < 2) { setTFromOpts([]); return; }
+      try {
+        const { data } = await listPeople({ q: tFromQ, limit: 8 });
+        setTFromOpts(data);
+      } catch {}
+    }, 220);
+    return () => clearTimeout(timer);
+  }, [tFromQ]);
+
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      if (!tToQ || tToQ.length < 2) { setTToOpts([]); return; }
+      try {
+        const { data } = await listPeople({ q: tToQ, limit: 8 });
+        setTToOpts(data);
+      } catch {}
+    }, 220);
+    return () => clearTimeout(timer);
+  }, [tToQ]);
+
+  // Resolve item + current holder whenever serial changes
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      if (!tSerial) { setTItemResolved(null); setTFromResolvedLabel(""); return; }
+      try {
+        const found = await resolveItemBySerial(tSerial.trim());
+        setTItemResolved(found);
+        if (found) {
+          const { data } = await getActiveAssignment(found.item_id);
+          setTFromResolvedLabel(data?.person_name || "");
+        } else {
+          setTFromResolvedLabel("");
+        }
+        // prefill equipment name if blank
+        if (found && !tEquipName) setTEquipName(found.name || "");
+      } catch {
+        setTItemResolved(null);
+        setTFromResolvedLabel("");
+      }
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [tSerial]); // eslint-disable-line
+
+  // Transfer submit
+  const onTransfer = async (e) => {
+    e.preventDefault();
+    setErr(""); setTBusy(true);
+    try {
+      // backend verifies that serial belongs to the selected FROM person
+      await transferAssignment({
+        serial_no: tSerial.trim(),
+        from_person_id: tFrom?.id,
+        to_person_id: tTo?.id,
+        due_back_date: tDue || null,
+        notes: tNotes || null,
+        item_name_for_log: tEquipName || null,
+      });
+
+      // clear
+      setTTo(null); setTToQ(""); setTFrom(null); setTFromQ("");
+      setTDue(""); setTNotes("");
+      // refresh current holder text
+      if (tItemResolved?.item_id) {
+        const { data } = await getActiveAssignment(tItemResolved.item_id);
+        setTFromResolvedLabel(data?.person_name || "");
+      }
+    } catch (e2) {
+      setErr(e2?.response?.data?.detail || "Transfer failed");
+    } finally {
+      setTBusy(false);
+    }
+  };
+
+  const onUploadTransfer = async (files) => {
+    if (!files?.length) return;
+    try {
+      // prefer resolved item id from serial
+      let targetId = tItemResolved?.item_id;
+      if (!targetId && tSerial) {
+        const found = await resolveItemBySerial(tSerial.trim());
+        targetId = found?.item_id;
+      }
+      if (!targetId) {
+        setErr("Select/resolve an equipment (by Serial) before adding photos.");
+        return;
+      }
+      setTBusy(true);
+      await uploadPhotos(targetId, files);
+      // if you want, show nothing else here; photos are attached to that item
+    } catch (e2) {
+      setErr(e2?.response?.data?.detail || "Photo upload failed");
+    } finally {
+      setTBusy(false);
+    }
   };
 
   return (
-    <div className="add-wrap page-in">
-      <header className="add-head">
+    <div className="page">
+      <div className="page-head">
         <div>
-          <h2>New Asset</h2>
-          <p className="muted">Create a new record and attach up to 5 photos.</p>
+          <h1>New Asset</h1>
+          <p className="muted">Create a new record and attach photos.</p>
         </div>
-        <div className="count"><span className="chip">{files.length}/5 photos</span></div>
-      </header>
+        {createdId && <div className="pill">ID: {createdId}</div>}
+      </div>
 
-      <form className="add-form" onSubmit={onSubmit}>
-        <section className="card section">
-          <h4 className="section-title">Core details</h4>
-          <div className="grid2">
-            <div className={`field ${errors.item_id ? "error" : ""}`}>
-              <label>Item ID *</label>
-              <input value={form.item_id} onChange={(e)=>setField("item_id", e.target.value)} placeholder="e.g., LT-2025-001"/>
-              {errors.item_id && <small className="err">{errors.item_id}</small>}
-            </div>
-            <div className={`field ${errors.name ? "error" : ""}`}>
+      {err && <div className="alert error">{err}</div>}
+
+      {/* ---------------- Core Details Card ---------------- */}
+      <div className={cx("card", "card-elev", busy && "disabled")}>
+        <div className="card-head"><h3>Core details</h3></div>
+        <div className="card-body">
+          <form onSubmit={onCreate} className="grid-two">
+            <div className="control">
               <label>Name *</label>
-              <input value={form.name} onChange={(e)=>setField("name", e.target.value)} placeholder="e.g., ThinkPad T14"/>
-              {errors.name && <small className="err">{errors.name}</small>}
+              <input className="input" required value={name} onChange={(e)=>setName(e.target.value)} placeholder="e.g., ThinkPad T14" />
             </div>
-            <div className={`field ${errors.quantity ? "error" : ""}`}>
+            <div className="control">
+              <label>Serial No *</label>
+              <input className="input" required value={serial} onChange={(e)=>setSerial(e.target.value)} placeholder="SN / Asset Tag" />
+            </div>
+            <div className="control">
               <label>Quantity</label>
-              <input type="number" min="0" value={form.quantity} onChange={(e)=>setField("quantity", e.target.value)}/>
-              {errors.quantity && <small className="err">{errors.quantity}</small>}
+              <input className="input" type="number" min="0" value={qty} onChange={(e)=>setQty(Number(e.target.value||0))} />
             </div>
-            <div className="field"><label>Serial No</label><input value={form.serial_no} onChange={(e)=>setField("serial_no", e.target.value)} placeholder="SN / Asset Tag"/></div>
-            <div className="field"><label>Model No</label><input value={form.model_no} onChange={(e)=>setField("model_no", e.target.value)} placeholder="e.g., 20W0001SUS"/></div>
-            <div className="field"><label>Department</label><input value={form.department} onChange={(e)=>setField("department", e.target.value)} placeholder="e.g., Finance"/></div>
-            <div className="field"><label>Owner</label><input value={form.owner} onChange={(e)=>setField("owner", e.target.value)} placeholder="e.g., Jane Perera"/></div>
-            <div className="field"><label>From (Transfer)</label><input value={form.transfer_from} onChange={(e)=>setField("transfer_from", e.target.value)} placeholder="e.g., Repair Center"/></div>
-            <div className="field"><label>To (Transfer)</label><input value={form.transfer_to} onChange={(e)=>setField("transfer_to", e.target.value)} placeholder="e.g., IT Stores"/></div>
-          </div>
-        </section>
+            <div className="control">
+              <label>Model No</label>
+              <input className="input" value={model} onChange={(e)=>setModel(e.target.value)} placeholder="e.g., 20W0001SUS" />
+            </div>
 
-        <section className="card section">
-          <h4 className="section-title">Notes & Photos</h4>
-          <div className="field"><label>Notes</label>
-            <textarea rows={5} value={form.notes} onChange={(e)=>setField("notes", e.target.value)} placeholder="Condition, warranty, handover, etc."/>
-          </div>
+            <div className="control">
+              <label>Department</label>
+              <FancySelect
+                placeholder="Pick department"
+                options={deps.map(d => ({ value: d.id, label: d.name }))}
+                value={depId}
+                onChange={setDepId}
+              />
+            </div>
+            <div className="control">
+              <label>Owner</label>
+              <div className="typeahead">
+                <input
+                  className="input"
+                  value={ownerPick ? ownerPick.full_name : ownerQ}
+                  onChange={(e)=>{ setOwnerQ(e.target.value); setOwnerPick(null); }}
+                  placeholder="type a name or code..."
+                  autoComplete="off"
+                />
+                {!ownerPick && ownerQ && ownerOpts.length > 0 && (
+                  <div className="menu">
+                    {ownerOpts.map(p => (
+                      <button key={p.id} type="button" className="menu-item"
+                        onClick={()=>{ setOwnerPick(p); setOwnerQ(""); setOwnerOpts([]); }}>
+                        <div>{p.full_name}</div>
+                        <div className="muted">{p.department_name || p.emp_code || ""}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
 
-          <div className="dropzone"
-               onDrop={onDrop}
-               onDragOver={(e)=>{ e.preventDefault(); e.stopPropagation(); }}
-               onClick={()=>fileRef.current?.click()}
-               role="button" tabIndex={0}
-               onKeyDown={(e)=>{ if(e.key==="Enter"||e.key===" ") fileRef.current?.click(); }}
-               aria-label="Upload photos">
-            <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e)=>addFiles(e.target.files)}/>
-            <div className="dz-ico">📷</div>
-            <div className="dz-text"><b>Drag & drop</b> images here, or <span className="link">browse</span><div className="muted">JPG/PNG/WebP · up to 5 photos</div></div>
-          </div>
+            <div className="control full">
+              <label>Notes & Photos</label>
+              <input className="input" value={notes} onChange={(e)=>setNotes(e.target.value)}
+                     placeholder="Condition, warranty, handover, etc." />
+            </div>
 
-          {previews.length > 0 && (
-            <div className="thumb-grid">
-              {previews.map((src, i) => (
-                <div className="thumb-item" key={src}>
-                  <img src={src} alt={`photo ${i+1}`} />
-                  <button type="button" className="btn ghost sm remove" onClick={() => onRemove(i)}>Remove</button>
+            <div className="control full btn-row">
+              <button className="btn primary">Save</button>
+
+              {/* Add photos on this card */}
+              <input ref={addPhotosCoreRef} type="file" accept="image/*" multiple hidden
+                     onChange={(e)=>onUploadCore(Array.from(e.target.files||[]))}/>
+              <button type="button" className="btn"
+                      disabled={!createdId}
+                      title={createdId ? "Attach photos to this new asset" : "Save asset first"}
+                      onClick={()=>addPhotosCoreRef.current?.click()}>
+                Add photos
+              </button>
+            </div>
+          </form>
+
+          {photos.length > 0 && (
+            <div className="photo-grid">
+              {photos.map(p => (
+                <div key={p.id} className="photo-tile">
+                  <img src={p.photo_url} alt="" />
+                  <button className="icon danger" onClick={()=>onDeletePhoto(p.id)}>✕</button>
                 </div>
               ))}
             </div>
           )}
-        </section>
-
-        <div className="actions row end">
-          <button type="button" className="btn" onClick={reset} disabled={saving}>Clear</button>
-          <button type="submit" className={`btn primary ${saving ? "loading" : ""}`} disabled={saving}>
-            {saving ? "Saving…" : "Save Item"}
-          </button>
         </div>
-      </form>
+      </div>
 
-      {toast && <div className="toast">{toast}</div>}
+      {/* ---------------- Quick Transfer Card ---------------- */}
+      <div className={cx("card", "card-elev", tBusy && "disabled")} style={{ marginTop: 16 }}>
+        <div className="card-head"><h3>Quick Transfer</h3></div>
+        <div className="card-body">
+          <form onSubmit={onTransfer} className="grid-two">
+            <div className="control">
+              <label>Serial No *</label>
+              <input className="input" required value={tSerial} onChange={(e)=>setTSerial(e.target.value)} placeholder="Type item id / serial / name..." />
+            </div>
+
+            <div className="control">
+              <label>Equipment name</label>
+              <input className="input" value={tEquipName} onChange={(e)=>setTEquipName(e.target.value)} placeholder="optional (for audit detail)" />
+            </div>
+
+            <div className="control">
+              <label>From</label>
+              <div className="typeahead">
+                <input className="input"
+                  value={tFrom ? tFrom.full_name : tFromQ}
+                  onChange={(e)=>{ setTFrom(null); setTFromQ(e.target.value); }}
+                  placeholder='Pick a person'
+                  autoComplete="off" />
+                {!tFrom && tFromQ && tFromOpts.length > 0 && (
+                  <div className="menu">
+                    {tFromOpts.map(p => (
+                      <button key={p.id} type="button" className="menu-item"
+                              onClick={()=>{ setTFrom(p); setTFromQ(""); setTFromOpts([]); }}>
+                        <div>{p.full_name}</div>
+                        <div className="muted">{p.department_name || p.emp_code || ""}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {!!tFromResolvedLabel && (
+                <div className="muted" style={{marginTop:6}}>Currently assigned to: <b>{tFromResolvedLabel}</b></div>
+              )}
+            </div>
+
+            <div className="control">
+              <label>To person</label>
+              <div className="typeahead">
+                <input className="input"
+                  value={tTo ? tTo.full_name : tToQ}
+                  onChange={(e)=>{ setTTo(null); setTToQ(e.target.value); }}
+                  placeholder='e.g., "IT Repairs" or a person name' autoComplete="off" />
+                {!tTo && tToQ && tToOpts.length > 0 && (
+                  <div className="menu">
+                    {tToOpts.map(p => (
+                      <button key={p.id} type="button" className="menu-item"
+                              onClick={()=>{ setTTo(p); setTToQ(""); setTToOpts([]); }}>
+                        <div>{p.full_name}</div>
+                        <div className="muted">{p.department_name || p.emp_code || ""}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="control">
+              <label>New due date (optional)</label>
+              <input className="input" type="date" value={tDue} onChange={(e)=>setTDue(e.target.value)} />
+            </div>
+
+            <div className="control">
+              <label>Notes</label>
+              <input className="input" value={tNotes} onChange={(e)=>setTNotes(e.target.value)} placeholder="optional..." />
+            </div>
+
+            <div className="control full btn-row">
+              <button className="btn primary" disabled={!tSerial || !tFrom || !tTo}>Transfer</button>
+
+              {/* Add photos from this card (to the resolved item) */}
+              <input ref={addPhotosTransferRef} type="file" accept="image/*" multiple hidden
+                     onChange={(e)=>onUploadTransfer(Array.from(e.target.files||[]))}/>
+              <button type="button" className="btn"
+                      title="Attach photos to the selected equipment"
+                      onClick={()=>addPhotosTransferRef.current?.click()}>
+                Add photos
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
     </div>
   );
 }

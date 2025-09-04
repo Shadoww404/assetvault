@@ -1,11 +1,15 @@
 // vite.config.js
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import path from "path";
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    alias: { "@": path.resolve(__dirname, "src") },
+  },
   server: {
-    host: true,               // allows LAN access when you use --host
+    host: "127.0.0.1",
     port: 5173,
     strictPort: true,
     allowedHosts: "all",
@@ -13,14 +17,12 @@ export default defineConfig({
       "/api": {
         target: "http://127.0.0.1:8000",
         changeOrigin: true,
-        // strip the /api prefix so /api/auth/login -> /auth/login on FastAPI
-        rewrite: (path) => path.replace(/^\/api/, ""),
+        rewrite: (p) => p.replace(/^\/api/, ""),
       },
       "/uploads": {
         target: "http://127.0.0.1:8000",
         changeOrigin: true,
       },
     },
-    hmr: { clientPort: 5173 },
   },
 });
