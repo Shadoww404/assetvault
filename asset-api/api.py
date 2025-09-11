@@ -1,5 +1,5 @@
 # api.py
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, Path
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
@@ -14,12 +14,19 @@ from security import (
     ACCESS_TOKEN_EXPIRE_MINUTES
 )
 
-# --------------------------------------------------------------------------
+# catch MySQL "unknown column" cleanly for fallback queries
+try:
+    from mysql.connector import errors as mysql_errors
+except Exception:  # plugin-safe
+    class _Dummy: ProgrammingError = Exception
+    mysql_errors = _Dummy()
+
+# ------------------------------------------------------------------------------
 # App / CORS / Static
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 auth_scheme = HTTPBearer(auto_error=True)
 
-app = FastAPI(title="AssetVault API", version="1.7")
+app = FastAPI(title="AssetVault API", version="1.8")
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,9 +45,9 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 MAX_PHOTOS_PER_ITEM = 5
 
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Auth helpers
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(auth_scheme)) -> Dict[str, Any]:
     token = credentials.credentials
     try:
@@ -54,9 +61,9 @@ def require_admin(user=Depends(get_current_user)):
         raise HTTPException(403, "Admin only")
     return user
 
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Schemas
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -66,6 +73,17 @@ class UserCreate(BaseModel):
     password: str
     full_name: Optional[str] = None
     role: Optional[str] = "staff"
+
+class UserOut(BaseModel):
+    id: int
+    username: str
+    full_name: Optional[str] = None
+    role: str
+
+class UserPatch(BaseModel):
+    full_name: Optional[str] = None
+    role: Optional[str] = None
+    new_password: Optional[str] = None
 
 class PhotoOut(BaseModel):
     id: int
@@ -143,16 +161,33 @@ class EntryOut(BaseModel):
     by_user: Optional[str] = None
     notes: Optional[str] = None
 
-class ActiveAssignmentOut(BaseModel):
-    id: int
+class AssignIn(BaseModel):
     item_id: str
-    item_name: Optional[str] = None
     person_id: int
-    person_name: str
+    due_back_date: Optional[str] = None
+    notes: Optional[str] = None
 
-# --------------------------------------------------------------------------
+class ReturnIn(BaseModel):
+    assignment_id: int
+    item_id: str
+    notes: Optional[str] = None
+
+class TransferIn(BaseModel):
+    # Either item_id OR serial_no required
+    item_id: Optional[str] = None
+    serial_no: Optional[str] = None
+    # Optional FROM check — if provided, we enforce it
+    from_person_id: Optional[int] = None
+    # Required destination
+    to_person_id: int
+    due_back_date: Optional[str] = None
+    notes: Optional[str] = None
+    # purely for nicer log text if serial resolves to no name
+    item_name_for_log: Optional[str] = None
+
+# ------------------------------------------------------------------------------
 # DB helpers
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 SELECT_LIST = """
   item_id, name, quantity, serial_no, model_no, department, owner,
   transfer_from, transfer_to, notes, photo_url, created_by, created_at
@@ -174,6 +209,19 @@ def _fetch_item(conn, item_id: str) -> ItemOut:
         r = cur.fetchone()
         if not r:
             raise HTTPException(404, "Item not found")
+        obj = _row_to_item(r)
+        obj.photos = get_item_photos(conn, obj.item_id)
+        return obj
+    finally:
+        cur.close()
+
+def get_item_by_serial(conn, serial: str) -> Optional[ItemOut]:
+    cur = conn.cursor()
+    try:
+        cur.execute(f"SELECT {SELECT_LIST} FROM items WHERE serial_no=%s", (serial,))
+        r = cur.fetchone()
+        if not r:
+            return None
         obj = _row_to_item(r)
         obj.photos = get_item_photos(conn, obj.item_id)
         return obj
@@ -229,16 +277,16 @@ def log_entry(conn, event: str, item_id: str, frm: Optional[str], to: Optional[s
     conn.commit()
     cur.close()
 
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Health
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 @app.get("/health")
 def health():
     return {"ok": True}
 
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Auth
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 @app.post("/auth/register", response_model=TokenOut)
 def register(user: UserCreate):
     conn = get_conn(); cur = conn.cursor()
@@ -278,9 +326,70 @@ def login(form: OAuth2PasswordRequestForm = Depends()):
 def me(user=Depends(get_current_user)):
     return user
 
-# --------------------------------------------------------------------------
-# Items: list / search / get
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Users (admin)
+# ------------------------------------------------------------------------------
+@app.get("/users", response_model=List[UserOut])
+def list_users(_admin=Depends(require_admin)):
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("SELECT id, username, full_name, role FROM users ORDER BY username")
+    data = [UserOut(id=int(r[0]), username=r[1], full_name=r[2], role=r[3]) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return data
+
+@app.post("/users", response_model=UserOut)
+def create_user_api(body: UserCreate, _admin=Depends(require_admin)):
+    if not body.password:
+        raise HTTPException(422, "Password is required")
+    conn = get_conn(); cur = conn.cursor()
+    try:
+        cur.execute("SELECT 1 FROM users WHERE username=%s", (body.username,))
+        if cur.fetchone():
+            raise HTTPException(409, "Username already exists")
+        cur.execute("""
+            INSERT INTO users (username, password_hash, full_name, role)
+            VALUES (%s,%s,%s,%s)
+        """, (body.username, hash_password(body.password), body.full_name, body.role or "staff"))
+        new_id = cur.lastrowid
+        conn.commit()
+        return UserOut(id=int(new_id), username=body.username, full_name=body.full_name, role=body.role or "staff")
+    finally:
+        cur.close(); conn.close()
+
+@app.patch("/users/{username}", response_model=UserOut)
+def update_user_api(username: str, body: UserPatch, _admin=Depends(require_admin)):
+    conn = get_conn(); cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT id, username, full_name, role FROM users WHERE username=%s", (username,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(404, "User not found")
+        full_name = body.full_name if body.full_name is not None else row["full_name"]
+        role = body.role if body.role is not None else row["role"]
+        cur2 = conn.cursor()
+        cur2.execute("UPDATE users SET full_name=%s, role=%s WHERE username=%s", (full_name, role, username))
+        if body.new_password:
+            cur2.execute("UPDATE users SET password_hash=%s WHERE username=%s", (hash_password(body.new_password), username))
+        conn.commit()
+        return UserOut(id=int(row["id"]), username=username, full_name=full_name, role=role)
+    finally:
+        cur.close(); conn.close()
+
+@app.delete("/users/{username}", status_code=204)
+def delete_user_api(username: str, _admin=Depends(require_admin)):
+    conn = get_conn(); cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM users WHERE username=%s", (username,))
+        if cur.rowcount == 0:
+            raise HTTPException(404, "User not found")
+        conn.commit()
+        return
+    finally:
+        cur.close(); conn.close()
+
+# ------------------------------------------------------------------------------
+# Items: list / search / get (+ serial helpers)
+# ------------------------------------------------------------------------------
 @app.get("/items", response_model=List[ItemOut])
 def list_items(user=Depends(get_current_user)):
     conn = get_conn(); cur = conn.cursor()
@@ -320,45 +429,67 @@ def get_item(item_id: str, user=Depends(get_current_user)):
     finally:
         conn.close()
 
-# --------------------------------------------------------------------------
+@app.get("/items/by-serial/{serial}", response_model=ItemOut)
+def get_item_by_serial_api(serial: str = Path(..., min_length=1), user=Depends(get_current_user)):
+    conn = get_conn()
+    try:
+        obj = get_item_by_serial(conn, serial)
+        if not obj:
+            raise HTTPException(404, "Item not found")
+        return obj
+    finally:
+        conn.close()
+
+# Active assignment for an item (used by Items quick transfer)
+@app.get("/items/{item_id}/active")
+def get_item_active(item_id: str, user=Depends(get_current_user)):
+    conn = get_conn()
+    try:
+        a = active_assignment(conn, item_id)
+        if not a:
+            return {}
+        holder = fetch_person(conn, int(a["person_id"])) if a.get("person_id") else None
+        return {
+            "assignment_id": a["id"],
+            "person_id": a["person_id"],
+            "person_name": holder.get("full_name") if holder else None,
+        }
+    finally:
+        conn.close()
+
+# ------------------------------------------------------------------------------
 # Items: create / update / delete
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 @app.post("/items", status_code=201, response_model=ItemOut)
 def create_item(
-    item_id: Optional[str] = Form(None),         # optional
+    item_id: Optional[str] = Form(None),
     name: str = Form(...),
     quantity: int = Form(0),
-    serial_no: Optional[str] = Form(None),       # you said Serial is your main key
+    serial_no: Optional[str] = Form(None),
     model_no: Optional[str] = Form(None),
     department: Optional[str] = Form(None),
     owner: Optional[str] = Form(None),
+    transfer_from: Optional[str] = Form(None),
+    transfer_to: Optional[str] = Form(None),
     notes: Optional[str] = Form(None),
     user=Depends(get_current_user),
 ):
-    iid = (item_id or "").strip()
-    sn = (serial_no or "").strip()
-    mn = (model_no or "").strip()
-    if not iid:
-        if sn:
-            iid = sn
-        elif mn:
-            iid = mn
-        else:
-            iid = f"ITM-{uuid.uuid4().hex[:8].upper()}"
-
+    # auto-generate an ID if not provided
+    new_id = item_id or uuid.uuid4().hex[:8].upper()
     conn = get_conn(); cur = conn.cursor()
     try:
-        cur.execute("SELECT 1 FROM items WHERE item_id=%s", (iid,))
+        cur.execute("SELECT 1 FROM items WHERE item_id=%s", (new_id,))
         if cur.fetchone():
-            raise HTTPException(409, "An item with this identifier already exists")
+            raise HTTPException(409, "Item ID already exists")
         cur.execute("""
             INSERT INTO items
               (item_id, name, quantity, serial_no, model_no, department, owner,
                transfer_from, transfer_to, notes, photo_url, created_by, created_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,NULL,NULL,%s,NULL,%s,NOW())
-        """, (iid, name, quantity, sn or None, mn or None, department, owner, notes, user["username"]))
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,%s,NOW())
+        """, (new_id, name, quantity, serial_no, model_no, department, owner,
+              transfer_from, transfer_to, notes, user["username"]))
         conn.commit()
-        return _fetch_item(conn, iid)
+        return _fetch_item(conn, new_id)
     finally:
         cur.close(); conn.close()
 
@@ -396,10 +527,24 @@ def update_item(item_id: str, patch: ItemUpdate, user=Depends(get_current_user))
     finally:
         cur.close(); conn.close()
 
+@app.put("/items/by-serial/{serial}", response_model=ItemOut)
+def update_item_by_serial(serial: str, patch: ItemUpdate, user=Depends(get_current_user)):
+    conn = get_conn()
+    try:
+        obj = get_item_by_serial(conn, serial)
+        if not obj:
+            raise HTTPException(404, "Item not found")
+        return update_item(obj.item_id, patch, user)  # reuse
+    finally:
+        conn.close()
+
 @app.delete("/items/{item_id}", status_code=204)
 def delete_item(item_id: str, user=Depends(get_current_user)):
     conn = get_conn(); cur = conn.cursor()
     try:
+        cur.execute("SELECT 1 FROM assignments WHERE item_id=%s AND returned_at IS NULL LIMIT 1", (item_id,))
+        if cur.fetchone():
+            raise HTTPException(409, "Item has an active assignment; return it first")
         cur.execute("DELETE FROM items WHERE item_id=%s", (item_id,))
         conn.commit()
         if cur.rowcount == 0:
@@ -408,9 +553,9 @@ def delete_item(item_id: str, user=Depends(get_current_user)):
     finally:
         cur.close(); conn.close()
 
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Photos
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 @app.post("/items/{item_id}/photo", response_model=ItemOut)
 def upload_photo(item_id: str, file: UploadFile = File(...), user=Depends(get_current_user)):
     if not (file.content_type or "").startswith("image/"):
@@ -496,9 +641,9 @@ def delete_photo(item_id: str, photo_id: int, user=Depends(get_current_user)):
         pass
     return
 
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # People & Departments
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 def row_to_person(r) -> PersonOut:
     return PersonOut(
         id=int(r[0]),
@@ -514,7 +659,7 @@ def row_to_person(r) -> PersonOut:
 def row_to_assignment(r) -> AssignmentOut:
     return AssignmentOut(
         id=int(r[0]),
-        item_id=r[1],
+        item_id=(r[1] or ""),  # tolerate fallback queries
         item_name=r[2],
         person_id=int(r[3]),
         assigned_at=r[4].strftime("%Y-%m-%d %H:%M:%S") if r[4] else None,
@@ -612,18 +757,55 @@ def get_person(person_id: int, user=Depends(get_current_user)):
 
 @app.get("/people/{person_id}/history", response_model=List[AssignmentOut])
 def get_person_history(person_id: int, user=Depends(get_current_user)):
+    """
+    Normal path expects assignments.item_id.
+    If the column doesn't exist yet (older DB), gracefully fall back to legacy shapes.
+    """
     conn = get_conn(); cur = conn.cursor()
-    cur.execute("""
-      SELECT a.id, a.item_id, i.name AS item_name, a.person_id,
-             a.assigned_at, a.due_back_date, a.returned_at, a.notes
-      FROM assignments a
-      LEFT JOIN items i ON i.item_id = a.item_id
-      WHERE a.person_id=%s
-      ORDER BY a.assigned_at DESC, a.id DESC
-    """, (person_id,))
-    rows = cur.fetchall()
-    cur.close(); conn.close()
-    return [row_to_assignment(r) for r in rows]
+    try:
+        try:
+            # Preferred (modern) schema
+            cur.execute("""
+              SELECT a.id, a.item_id, i.name AS item_name, a.person_id,
+                     a.assigned_at, a.due_back_date, a.returned_at, a.notes
+              FROM assignments a
+              LEFT JOIN items i ON i.item_id = a.item_id
+              WHERE a.person_id=%s
+              ORDER BY a.assigned_at DESC, a.id DESC
+            """, (person_id,))
+            rows = cur.fetchall()
+        except mysql_errors.ProgrammingError as e:
+            # Error 1054: Unknown column 'a.item_id'
+            if getattr(e, "errno", None) != 1054:
+                raise
+            # Fallback 1: a.item_serial joining i.serial_no
+            try:
+                cur.execute("""
+                  SELECT a.id, i.item_id, i.name AS item_name, a.person_id,
+                         a.assigned_at, a.due_back_date, a.returned_at, a.notes
+                  FROM assignments a
+                  LEFT JOIN items i ON i.serial_no = a.item_serial
+                  WHERE a.person_id=%s
+                  ORDER BY a.assigned_at DESC, a.id DESC
+                """, (person_id,))
+                rows = cur.fetchall()
+            except mysql_errors.ProgrammingError as e2:
+                # Fallback 2: a.item_id_int -> items.id
+                if getattr(e2, "errno", None) != 1054:
+                    raise
+                cur.execute("""
+                  SELECT a.id, i.item_id, i.name AS item_name, a.person_id,
+                         a.assigned_at, a.due_back_date, a.returned_at, a.notes
+                  FROM assignments a
+                  LEFT JOIN items i ON i.id = a.item_id_int
+                  WHERE a.person_id=%s
+                  ORDER BY a.assigned_at DESC, a.id DESC
+                """, (person_id,))
+                rows = cur.fetchall()
+
+        return [row_to_assignment(r) for r in rows]
+    finally:
+        cur.close(); conn.close()
 
 @app.post("/people", response_model=PersonOut)
 def create_person(body: PersonIn, _admin=Depends(require_admin)):
@@ -685,21 +867,17 @@ def search_items_lite(q: str, limit: int = 20, user=Depends(get_current_user)):
     cur.close(); conn.close()
     return data
 
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Assignments + Entries (audit)
-# --------------------------------------------------------------------------
-class AssignIn(BaseModel):
-    item_id: str
-    person_id: int
-    due_back_date: Optional[str] = None
-    notes: Optional[str] = None
-
+# ------------------------------------------------------------------------------
 @app.post("/assignments", status_code=201)
 def assign_to_person_api(data: AssignIn, user=Depends(get_current_user)):
     conn = get_conn(); cur = conn.cursor()
 
-    cur.execute("SELECT 1 FROM items WHERE item_id=%s", (data.item_id,))
-    if not cur.fetchone():
+    # item & person checks
+    cur.execute("SELECT name FROM items WHERE item_id=%s", (data.item_id,))
+    row = cur.fetchone()
+    if not row:
         cur.close(); conn.close()
         raise HTTPException(404, "Item not found")
 
@@ -708,27 +886,25 @@ def assign_to_person_api(data: AssignIn, user=Depends(get_current_user)):
         cur.close(); conn.close()
         raise HTTPException(404, "Person not found")
 
+    # ensure not already assigned
     cur.execute("SELECT 1 FROM assignments WHERE item_id=%s AND returned_at IS NULL", (data.item_id,))
     if cur.fetchone():
         cur.close(); conn.close()
         raise HTTPException(409, "Item is already assigned to someone")
 
+    # create assignment
     cur.execute("""
       INSERT INTO assignments (item_id, person_id, assigned_at, due_back_date, returned_at, notes, assigned_by)
       VALUES (%s,%s,NOW(), %s, NULL, %s, %s)
     """, (data.item_id, data.person_id, data.due_back_date, data.notes, user["username"]))
     conn.commit()
 
+    # audit
     log_entry(conn, "assign", data.item_id, frm=None, to=person_label(target),
               by_user=user["username"], notes=data.notes)
 
     cur.close(); conn.close()
     return {"ok": True}
-
-class ReturnIn(BaseModel):
-    assignment_id: int
-    item_id: str
-    notes: Optional[str] = None
 
 @app.post("/assignments/return")
 def return_assignment_api(data: ReturnIn, user=Depends(get_current_user)):
@@ -763,98 +939,72 @@ def return_assignment_api(data: ReturnIn, user=Depends(get_current_user)):
     cur.close(); conn.close()
     return {"ok": True}
 
-# >>> Updated transfer input to support serial + from_person verification
-class TransferIn(BaseModel):
-    item_id: Optional[str] = None
-    serial_no: Optional[str] = None
-    from_person_id: Optional[int] = None
-    to_person_id: int
-    due_back_date: Optional[str] = None
-    notes: Optional[str] = None
-    item_name_for_log: Optional[str] = None
-
 @app.post("/assignments/transfer")
 def transfer_assignment_api(data: TransferIn, user=Depends(get_current_user)):
+    """
+    Accepts either item_id or serial_no.
+    If from_person_id is provided, we enforce that the current holder matches.
+    """
     conn = get_conn(); cur = conn.cursor(dictionary=True)
 
-    # Resolve item by item_id OR serial_no
-    item_id = data.item_id
-    if not item_id:
-        if not data.serial_no:
-            cur.close(); conn.close()
-            raise HTTPException(400, "Provide item_id or serial_no")
+    # Resolve item_id if only serial was provided
+    resolved = None
+    if data.item_id:
+        cur.execute("SELECT item_id, name FROM items WHERE item_id=%s", (data.item_id,))
+        resolved = cur.fetchone()
+    elif data.serial_no:
         cur.execute("SELECT item_id, name FROM items WHERE serial_no=%s", (data.serial_no,))
-        row = cur.fetchone()
-        if not row:
-            cur.close(); conn.close()
-            raise HTTPException(404, "No item found with that serial number")
-        item_id = row["item_id"]
+        resolved = cur.fetchone()
 
-    # Verify "from" person if provided
-    current = active_assignment(conn, item_id)
-    if data.from_person_id is not None:
-        if not current:
-            cur.close(); conn.close()
-            raise HTTPException(409, "Item is not currently assigned")
-        if int(current["person_id"]) != int(data.from_person_id):
-            cur.close(); conn.close()
-            raise HTTPException(409, "Serial does not belong to the selected 'From' person")
+    if not resolved:
+        cur.close(); conn.close()
+        raise HTTPException(404, "Item not found")
 
-    # Resolve target person
-    tgt = fetch_person(conn, data.to_person_id)
-    if not tgt:
+    item_id = resolved["item_id"]
+    item_name = resolved["name"] or (data.item_name_for_log or "")
+
+    # Destination
+    target = fetch_person(conn, data.to_person_id)
+    if not target:
         cur.close(); conn.close()
         raise HTTPException(404, "Target person not found")
 
-    # Close current (if any) then open new
+    # Current holder (if any)
+    current = active_assignment(conn, item_id)
+    if data.from_person_id is not None:
+        # must match
+        if not current or int(current["person_id"]) != int(data.from_person_id):
+            cur.close(); conn.close()
+            raise HTTPException(409, "Serial is not currently held by the selected FROM person")
+
     cur2 = conn.cursor()
+
+    # Close current if exists
     if current:
         cur2.execute("UPDATE assignments SET returned_at=NOW() WHERE id=%s", (current["id"],))
+
+    # Open new
     cur2.execute("""
       INSERT INTO assignments (item_id, person_id, assigned_at, due_back_date, returned_at, notes, assigned_by)
       VALUES (%s,%s,NOW(), %s, NULL, %s, %s)
     """, (item_id, data.to_person_id, data.due_back_date, data.notes, user["username"]))
     conn.commit()
 
-    # Enrich notes with serial/name for audit trail
-    extra = []
-    if data.serial_no: extra.append(f"serial:{data.serial_no}")
-    if data.item_name_for_log: extra.append(f"name:{data.item_name_for_log}")
-    audit_notes = (data.notes or "")
-    if extra:
-        audit_notes = (audit_notes + " [" + " | ".join(extra) + "]").strip()
-
-    log_entry(conn, "transfer", item_id,
-              frm=person_label(fetch_person(conn, current["person_id"])) if current else None,
-              to=person_label(tgt),
-              by_user=user["username"], notes=audit_notes)
+    # Audit
+    log_entry(
+        conn, "transfer", item_id,
+        frm=person_label(fetch_person(conn, int(current["person_id"])) if current else None),
+        to=person_label(target),
+        by_user=user["username"],
+        notes=(data.notes or "").strip() or item_name
+    )
 
     cur.close(); conn.close()
     return {"ok": True}
 
-@app.get("/assignments/active/{item_id}", response_model=Optional[ActiveAssignmentOut])
-def active_for_item(item_id: str, user=Depends(get_current_user)):
-    conn = get_conn(); cur = conn.cursor()
-    cur.execute("""
-      SELECT a.id, a.item_id, i.name, a.person_id, COALESCE(p.full_name,'')
-      FROM assignments a
-      LEFT JOIN items i ON i.item_id = a.item_id
-      LEFT JOIN people p ON p.id = a.person_id
-      WHERE a.item_id=%s AND a.returned_at IS NULL
-      ORDER BY a.id DESC
-      LIMIT 1
-    """, (item_id,))
-    r = cur.fetchone()
-    cur.close(); conn.close()
-    if not r:
-        return None
-    return ActiveAssignmentOut(
-        id=int(r[0]), item_id=r[1], item_name=r[2], person_id=int(r[3]), person_name=r[4]
-    )
-
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Entries (audit log)
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 @app.get("/entries", response_model=List[EntryOut])
 def list_entries(limit: int = 200, user=Depends(get_current_user)):
     conn = get_conn(); cur = conn.cursor()

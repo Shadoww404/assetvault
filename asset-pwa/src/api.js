@@ -2,10 +2,12 @@
 import axios from "axios";
 
 const api = axios.create({ baseURL: "/api" });
+const getToken = () =>
+  sessionStorage.getItem("av_token") ?? localStorage.getItem("av_token");
 
 // attach JWT from sessionStorage (fallback to localStorage for older tokens)
 api.interceptors.request.use((config) => {
-  const t = sessionStorage.getItem("av_token") || localStorage.getItem("av_token");
+  const t = getToken();
   if (t) config.headers.Authorization = `Bearer ${t}`;
   return config;
 });
@@ -26,8 +28,7 @@ export const me = () => api.get("/auth/me");
 export const listItems   = () => api.get("/items");
 export const searchItems = (q) => api.get("/items/search", { params: { q } });
 
-
-// Create: pass a plain object, we build FormData; item_id is optional
+// Create: pass a plain object, we build FormData
 export function createItem(obj) {
   const fd = new FormData();
   for (const [k, v] of Object.entries(obj || {})) {
@@ -37,10 +38,10 @@ export function createItem(obj) {
 }
 
 export const getItemBySerial = (serial) => api.get(`/items/by-serial/${encodeURIComponent(serial)}`);
-export const updateItem = (id, patch) => api.put(`/items/${encodeURIComponent(id)}`, patch);
+export const updateItem      = (id, patch) => api.put(`/items/${encodeURIComponent(id)}`, patch);
 export const updateItemBySerial = (serial, patch) =>
   api.put(`/items/by-serial/${encodeURIComponent(serial)}`, patch);
-export const deleteItem  = (id) => api.delete(`/items/${encodeURIComponent(id)}`);
+export const deleteItem      = (id) => api.delete(`/items/${encodeURIComponent(id)}`);
 
 // Photos
 export const uploadPrimaryPhoto = (itemId, file) => {
@@ -63,14 +64,14 @@ export const listPeople        = (params={}) => api.get("/people", { params });
 export const getPerson         = (id) => api.get(`/people/${id}`);
 export const getPersonHistory  = (id) => api.get(`/people/${id}/history`);
 
-// Typeahead for equipment (returns item_id + serial_no + name)
+// Typeahead for equipment (returns item_id + name)
 export const searchItemsLite   = (q) => api.get("/items/search-lite", { params: { q } });
 
 // ---- Assignments / Transfers ----
 export const assignToPerson      = (payload) => api.post("/assignments", payload);
 export const returnAssignment    = (payload) => api.post("/assignments/return", payload);
 export const transferAssignment  = (payload) => api.post("/assignments/transfer", payload);
-export const getActiveAssignment = (params) => api.get("/assignments/active", { params });
+export const getActiveAssignment = (itemId) => api.get(`/items/${encodeURIComponent(itemId)}/active`);
 
 // ---- Admin ----
 export const createDepartment = (name) => api.post("/departments", { name });
@@ -80,5 +81,11 @@ export const deleteDepartment = (id) => api.delete(`/departments/${id}`);
 export const createPerson  = (body) => api.post("/people", body);
 export const updatePerson  = (id, body) => api.patch(`/people/${id}`, body);
 export const deletePerson  = (id) => api.delete(`/people/${id}`);
+
+// ---- Users (admin) ----
+export const listUsers  = () => api.get("/users");
+export const createUser = (body) => api.post("/users", body); // {username,password,full_name,role}
+export const updateUser = (username, body) => api.patch(`/users/${encodeURIComponent(username)}`, body); // {full_name?,role?,new_password?}
+export const deleteUser = (username) => api.delete(`/users/${encodeURIComponent(username)}`);
 
 export default api;

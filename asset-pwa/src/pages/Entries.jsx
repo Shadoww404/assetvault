@@ -82,6 +82,7 @@ export default function Entries() {
     setPreviewItem(item);
     setActiveIdx(0);
     try {
+      // Will work when item_id exists; otherwise we gracefully fall back below.
       const resp = await listPhotos(item.item_id);
       const ph = resp.data || [];
       const arr = ph.length ? ph : item.photo_url ? [{ photo_url: item.photo_url }] : [];
@@ -99,7 +100,7 @@ export default function Entries() {
     setTimeout(() => {
       setPreviewOpen(false);
       setClosing(false);
-    }, 180); // match .modal-out duration (motion.css)
+    }, 180); // match .modal-out duration
   };
 
   // keyboard nav for modal
@@ -111,7 +112,9 @@ export default function Entries() {
         setActiveIdx((i) => (i + 1) % Math.max(1, previewPhotos.length || 1));
       if (e.key === "ArrowLeft")
         setActiveIdx(
-          (i) => (i - 1 + Math.max(1, previewPhotos.length || 1)) % Math.max(1, previewPhotos.length || 1)
+          (i) =>
+            (i - 1 + Math.max(1, previewPhotos.length || 1)) %
+            Math.max(1, previewPhotos.length || 1)
         );
     };
     window.addEventListener("keydown", onKey);
@@ -123,11 +126,13 @@ export default function Entries() {
       <div className="toolbar row between">
         <h3>Entries</h3>
         <div className="search">
-          <span className="search-ico" aria-hidden>🔎</span>
+          <span className="search-ico" aria-hidden>
+            🔎
+          </span>
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search by ID, name, serial, model…"
+            placeholder="Search by name, serial, model…"
           />
         </div>
       </div>
@@ -137,21 +142,39 @@ export default function Entries() {
           <table className="table pro">
             <thead>
               <tr>
-                <th>Date</th><th>ID</th><th>Name</th><th>Serial</th>
-                <th>Dept</th><th>Owner</th><th>From → To</th><th>By</th>
+                <th>Date</th>
+                <th>Name</th>
+                <th>Serial</th>
+                <th>Dept</th>
+                <th>Owner</th>
+                <th>From → To</th>
+                <th>By</th>
               </tr>
             </thead>
             <tbody>
               {Array.from({ length: 6 }).map((_, i) => (
                 <tr key={i}>
-                  <td><div className="skel" style={{ height: 12, width: 120, borderRadius: 6 }} /></td>
-                  <td><div className="skel" style={{ height: 12, width: 80, borderRadius: 6 }} /></td>
-                  <td><div className="skel" style={{ height: 12, width: 180, borderRadius: 6 }} /></td>
-                  <td><div className="skel" style={{ height: 12, width: 120, borderRadius: 6 }} /></td>
-                  <td><div className="skel" style={{ height: 12, width: 100, borderRadius: 6 }} /></td>
-                  <td><div className="skel" style={{ height: 12, width: 120, borderRadius: 6 }} /></td>
-                  <td><div className="skel" style={{ height: 12, width: 150, borderRadius: 6 }} /></td>
-                  <td><div className="skel" style={{ height: 12, width: 120, borderRadius: 6 }} /></td>
+                  <td>
+                    <div className="skel" style={{ height: 12, width: 120, borderRadius: 6 }} />
+                  </td>
+                  <td>
+                    <div className="skel" style={{ height: 12, width: 180, borderRadius: 6 }} />
+                  </td>
+                  <td>
+                    <div className="skel" style={{ height: 12, width: 120, borderRadius: 6 }} />
+                  </td>
+                  <td>
+                    <div className="skel" style={{ height: 12, width: 100, borderRadius: 6 }} />
+                  </td>
+                  <td>
+                    <div className="skel" style={{ height: 12, width: 120, borderRadius: 6 }} />
+                  </td>
+                  <td>
+                    <div className="skel" style={{ height: 12, width: 150, borderRadius: 6 }} />
+                  </td>
+                  <td>
+                    <div className="skel" style={{ height: 12, width: 120, borderRadius: 6 }} />
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -162,22 +185,28 @@ export default function Entries() {
           <table className="table pro">
             <thead>
               <tr>
-                <th>Date</th><th>ID</th><th>Name</th><th>Serial</th>
-                <th>Dept</th><th>Owner</th><th>From → To</th><th>By</th>
+                <th>Date</th>
+                <th>Name</th>
+                <th>Serial</th>
+                <th>Dept</th>
+                <th>Owner</th>
+                <th>From → To</th>
+                <th>By</th>
               </tr>
             </thead>
             <tbody>
               {sorted.map((r) => (
                 <tr
-                  key={r.item_id}
+                  key={r.item_id ?? r.serial_no ?? r.name}
                   className="row-click"
                   onClick={() => openPreview(r)}
                   tabIndex={0}
-                  onKeyDown={(e) => { if (e.key === "Enter") openPreview(r); }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") openPreview(r);
+                  }}
                   title="View details"
                 >
                   <td>{fmtDate(r.created_at)}</td>
-                  <td>#{r.item_id}</td>
                   <td>{r.name}</td>
                   <td>{r.serial_no || "-"}</td>
                   <td>{r.department || "-"}</td>
@@ -197,12 +226,16 @@ export default function Entries() {
           <div className={`preview ${closing ? "modal-out" : "modal-in"}`}>
             <div className="preview-head">
               <div>
-                <h3>{previewItem.name} <span className="pill">#{previewItem.item_id}</span></h3>
+                {/* Removed ID pill; show name only */}
+                <h3>{previewItem.name}</h3>
                 <div className="muted small">
-                  By <b>{previewItem.created_by || "-"}</b> on <b>{fmtDate(previewItem.created_at)}</b>
+                  By <b>{previewItem.created_by || "-"}</b> on{" "}
+                  <b>{fmtDate(previewItem.created_at)}</b>
                 </div>
               </div>
-              <button className="btn ghost" onClick={onClosePreview} aria-label="Close">✕</button>
+              <button className="btn ghost" onClick={onClosePreview} aria-label="Close">
+                ✕
+              </button>
             </div>
 
             <div className="preview-body">
@@ -214,17 +247,27 @@ export default function Entries() {
                       <button
                         className="nav prev"
                         aria-label="Previous"
-                        onClick={() => setActiveIdx((i) => (i - 1 + previewPhotos.length) % previewPhotos.length)}
-                      >‹</button>
+                        onClick={() =>
+                          setActiveIdx((i) => (i - 1 + previewPhotos.length) % previewPhotos.length)
+                        }
+                      >
+                        ‹
+                      </button>
                       <img
-                        src={`${apiBase}${(previewPhotos[activeIdx].photo_url ?? previewPhotos[activeIdx])}`}
+                        src={`${apiBase}${
+                          previewPhotos[activeIdx].photo_url ?? previewPhotos[activeIdx]
+                        }`}
                         alt=""
                       />
                       <button
                         className="nav next"
                         aria-label="Next"
-                        onClick={() => setActiveIdx((i) => (i + 1) % previewPhotos.length)}
-                      >›</button>
+                        onClick={() =>
+                          setActiveIdx((i) => (i + 1) % previewPhotos.length)
+                        }
+                      >
+                        ›
+                      </button>
                     </>
                   ) : (
                     <div className="noimg">No photos</div>
@@ -252,8 +295,11 @@ export default function Entries() {
                 {previewPhotos.length > 0 && (
                   <div className="open-full">
                     <a
-                      href={`${apiBase}${(previewPhotos[activeIdx].photo_url ?? previewPhotos[activeIdx])}`}
-                      target="_blank" rel="noreferrer"
+                      href={`${apiBase}${
+                        previewPhotos[activeIdx].photo_url ?? previewPhotos[activeIdx]
+                      }`}
+                      target="_blank"
+                      rel="noreferrer"
                       className="btn"
                       title="Open original"
                     >
@@ -266,14 +312,23 @@ export default function Entries() {
               {/* Right: details */}
               <div className="details">
                 <div className="kv">
-                  <label>Item ID</label><div>#{previewItem.item_id}</div>
-                  <label>Name</label><div>{previewItem.name}</div>
-                  <label>Quantity</label><div>{previewItem.quantity}</div>
-                  <label>Serial</label><div>{previewItem.serial_no || "-"}</div>
-                  <label>Model</label><div>{previewItem.model_no || "-"}</div>
-                  <label>Department</label><div>{previewItem.department || "-"}</div>
-                  <label>Owner</label><div>{previewItem.owner || "-"}</div>
-                  <label>Transfer</label><div>{(previewItem.transfer_from || "-") + " → " + (previewItem.transfer_to || "-")}</div>
+                  {/* Removed "Item ID" row */}
+                  <label>Name</label>
+                  <div>{previewItem.name}</div>
+                  <label>Quantity</label>
+                  <div>{previewItem.quantity}</div>
+                  <label>Serial</label>
+                  <div>{previewItem.serial_no || "-"}</div>
+                  <label>Model</label>
+                  <div>{previewItem.model_no || "-"}</div>
+                  <label>Department</label>
+                  <div>{previewItem.department || "-"}</div>
+                  <label>Owner</label>
+                  <div>{previewItem.owner || "-"}</div>
+                  <label>Transfer</label>
+                  <div>
+                    {(previewItem.transfer_from || "-") + " → " + (previewItem.transfer_to || "-")}
+                  </div>
                 </div>
                 <div className="notes">
                   <label>Notes</label>
@@ -284,7 +339,10 @@ export default function Entries() {
               </div>
             </div>
           </div>
-          <div className={`preview-backdrop ${closing ? "backdrop-out" : "backdrop-in"}`} onClick={onClosePreview} />
+          <div
+            className={`preview-backdrop ${closing ? "backdrop-out" : "backdrop-in"}`}
+            onClick={onClosePreview}
+          />
         </div>
       )}
     </div>
