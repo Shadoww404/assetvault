@@ -13,14 +13,16 @@ export default function App({ onLoggedOut }) {
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
 
+  // clear only when the user explicitly logs out (NOT on refresh)
   const clearAuth = () => {
     try {
-      localStorage.removeItem("av_token");
       sessionStorage.removeItem("av_token");
     } catch {}
   };
   const broadcastLogout = () => {
-    try { localStorage.setItem("av_logout", String(Date.now())); } catch {}
+    try {
+      localStorage.setItem("av_logout", String(Date.now()));
+    } catch {}
   };
   const doLogout = () => {
     clearAuth();
@@ -29,6 +31,7 @@ export default function App({ onLoggedOut }) {
     else window.location.replace("/login");
   };
 
+  // check who I am on mount (if token is valid)
   useEffect(() => {
     let on = true;
     (async () => {
@@ -45,24 +48,19 @@ export default function App({ onLoggedOut }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // cross-tab logout sync (no beforeunload)
   useEffect(() => {
-    const onBeforeUnload = () => {
-      clearAuth();
-      broadcastLogout();
-    };
     const onStorage = (e) => {
       if (e.key === "av_logout") {
         clearAuth();
         if (typeof onLoggedOut === "function") onLoggedOut();
-        else if (!location.pathname.startsWith("/login")) window.location.replace("/login");
+        else if (!location.pathname.startsWith("/login")) {
+          window.location.replace("/login");
+        }
       }
     };
-    window.addEventListener("beforeunload", onBeforeUnload);
     window.addEventListener("storage", onStorage);
-    return () => {
-      window.removeEventListener("beforeunload", onBeforeUnload);
-      window.removeEventListener("storage", onStorage);
-    };
+    return () => window.removeEventListener("storage", onStorage);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -77,30 +75,17 @@ export default function App({ onLoggedOut }) {
       <header className="topbar">
         <div className="brand">
           <span className="bag">👜</span>
-          <span className="name">AssetVault</span>
+        <span className="name">AssetVault</span>
         </div>
 
-        {/* animated nav */}
         <nav className="tabs">
-          <NavLink to="/" end className={({isActive}) => isActive ? "tab active" : "tab"}>
-            <span>Items</span>
-          </NavLink>
-          <NavLink to="/entries" className={({isActive}) => isActive ? "tab active" : "tab"}>
-            <span>Entries</span>
-          </NavLink>
-          <NavLink to="/assignments" className={({isActive}) => isActive ? "tab active" : "tab"}>
-            <span>Assignments</span>
-          </NavLink>
-
-          {/* Admins see Admin; others see Directory */}
+          <NavLink to="/" end className={({isActive}) => isActive ? "tab active" : "tab"}><span>Items</span></NavLink>
+          <NavLink to="/entries" className={({isActive}) => isActive ? "tab active" : "tab"}><span>Entries</span></NavLink>
+          <NavLink to="/assignments" className={({isActive}) => isActive ? "tab active" : "tab"}><span>Assignments</span></NavLink>
           {!authLoading && (user?.role === "admin" ? (
-            <NavLink to="/admin" className={({isActive}) => isActive ? "tab active" : "tab"}>
-              <span>Admin</span>
-            </NavLink>
+            <NavLink to="/admin" className={({isActive}) => isActive ? "tab active" : "tab"}><span>Admin</span></NavLink>
           ) : (
-            <NavLink to="/directory" className={({isActive}) => isActive ? "tab active" : "tab"}>
-              <span>Directory</span>
-            </NavLink>
+            <NavLink to="/directory" className={({isActive}) => isActive ? "tab active" : "tab"}><span>Directory</span></NavLink>
           ))}
         </nav>
 
