@@ -1,15 +1,22 @@
+// src/ErrorBoundary.jsx
 import React from "react";
 
 export default class ErrorBoundary extends React.Component {
-  constructor(props){ super(props); this.state = { hasError: false, err: null }; }
-  static getDerivedStateFromError(error){ return { hasError: true, err: error }; }
-  componentDidCatch(error, info){ console.error("UI error:", error, info); }
+  constructor(props){ super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error){ return { error }; }
+  componentDidCatch(error, info){ console.error("Render error:", error, info); }
   render(){
-    if(this.state.hasError){
+    if (this.state.error) {
+      const msg = this.state.error?.message || String(this.state.error);
       return (
-        <div style={{padding:20}}>
-          <h3>Something went wrong.</h3>
-          <pre style={{whiteSpace:"pre-wrap"}}>{String(this.state.err)}</pre>
+        <div className="page-in">
+          <div className="alert error" style={{ whiteSpace: "pre-wrap" }}>
+            <h3>Something went wrong</h3>
+            {msg}
+          </div>
+          <button className="btn" onClick={()=>this.setState({error:null})}>
+            Try again
+          </button>
         </div>
       );
     }

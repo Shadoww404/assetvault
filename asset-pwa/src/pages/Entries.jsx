@@ -1,350 +1,185 @@
 // src/pages/Entries.jsx
-import { useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { listItems, searchItems, listPhotos } from "../api";
+import { useEffect, useMemo, useState } from "react";
+import { listEntries } from "../api";
+import errorText from "../ui/errorText";
 
-function fmtDate(d) {
-  if (!d) return "-";
-  try {
-    return new Intl.DateTimeFormat(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    }).format(new Date(d.replace(" ", "T")));
-  } catch {
-    return d;
-  }
-}
-
-export default function Entries() {
-  // search & data
-  const [q, setQ] = useState("");
+export default function EntriesPage() {
   const [rows, setRows] = useState([]);
-
-  // loading with no-flicker skeleton
   const [loading, setLoading] = useState(true);
-  const [showSkel, setShowSkel] = useState(false);
-  const firstRealMount = useRef(false); // survives StrictMode double-mount
+  const [err, setErr] = useState("");
+  const [search, setSearch] = useState("");
 
-  // preview modal
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const [closing, setClosing] = useState(false);
-  const [previewItem, setPreviewItem] = useState(null);
-  const [previewPhotos, setPreviewPhotos] = useState([]); // [{id, photo_url}] or strings
-  const [activeIdx, setActiveIdx] = useState(0);
+  // pagination state
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
 
-  const apiBase = import.meta.env.VITE_API_URL || "";
-
-  // single debounced loader (prevents initial double-load & flicker)
   useEffect(() => {
-    let cancelled = false;
-
-    // debounce while typing; no delay for the first real load
-    const delay = firstRealMount.current ? 250 : 0;
-
-    setLoading(true);
-    // only show skeleton if it takes longer than 120ms
-    const skelTimer = setTimeout(() => {
-      if (!cancelled) setShowSkel(true);
-    }, 120);
-
-    const t = setTimeout(async () => {
+    let on = true;
+    (async () => {
+      setLoading(true);
+      setErr("");
       try {
-        const { data } = q ? await searchItems(q) : await listItems();
-        if (!cancelled) setRows(data);
+        const { data } = await listEntries(500); // fetch up to 500 latest
+        if (on) setRows(data || []);
+      } catch (e) {
+        if (on) setErr(errorText(e, "Failed to load entries"));
       } finally {
-        if (!cancelled) {
-          clearTimeout(skelTimer);
-          setShowSkel(false);
-          setLoading(false);
-          firstRealMount.current = true;
-        }
+        if (on) setLoading(false);
       }
-    }, delay);
-
+    })();
     return () => {
-      cancelled = true;
-      clearTimeout(t);
-      clearTimeout(skelTimer);
+      on = false;
     };
-  }, [q]);
-
-  const sorted = useMemo(() => {
-    return [...rows].sort((a, b) => {
-      const da = a.created_at ? new Date(a.created_at.replace(" ", "T")).getTime() : 0;
-      const db = b.created_at ? new Date(b.created_at.replace(" ", "T")).getTime() : 0;
-      return db - da; // newest first
-    });
-  }, [rows]);
-
-  const openPreview = useCallback(async (item) => {
-    setPreviewItem(item);
-    setActiveIdx(0);
-    try {
-      // Will work when item_id exists; otherwise we gracefully fall back below.
-      const resp = await listPhotos(item.item_id);
-      const ph = resp.data || [];
-      const arr = ph.length ? ph : item.photo_url ? [{ photo_url: item.photo_url }] : [];
-      setPreviewPhotos(arr);
-    } catch {
-      const arr =
-        item.photos?.length ? item.photos : item.photo_url ? [{ photo_url: item.photo_url }] : [];
-      setPreviewPhotos(arr);
-    }
-    setPreviewOpen(true);
   }, []);
 
-  const onClosePreview = () => {
-    setClosing(true);
-    setTimeout(() => {
-      setPreviewOpen(false);
-      setClosing(false);
-    }, 180); // match .modal-out duration
-  };
+  const filtered = useMemo(() => {
+    const needle = (search || "").toLowerCase().trim();
+    if (!needle) return rows;
+    return rows.filter((r) => {
+      const hay = [
+        r.event_time,
+        r.event,
+        r.item_id,
+        r.from_holder,
+        r.to_holder,
+        r.by_user,
+        r.notes,
+      ]
+        .map((x) => (x || "").toString().toLowerCase())
+        .join(" ");
+      return hay.includes(needle);
+    });
+  }, [rows, search]);
 
-  // keyboard nav for modal
+  // reset to first page on filter change
   useEffect(() => {
-    if (!previewOpen) return;
-    const onKey = (e) => {
-      if (e.key === "Escape") onClosePreview();
-      if (e.key === "ArrowRight")
-        setActiveIdx((i) => (i + 1) % Math.max(1, previewPhotos.length || 1));
-      if (e.key === "ArrowLeft")
-        setActiveIdx(
-          (i) =>
-            (i - 1 + Math.max(1, previewPhotos.length || 1)) %
-            Math.max(1, previewPhotos.length || 1)
-        );
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [previewOpen, previewPhotos.length]);
+    setPage(1);
+  }, [search, rows.length]);
+
+  const totalPages = Math.max(1, Math.ceil((filtered.length || 0) / pageSize));
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
+  const pagedRows = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, page, pageSize]);
 
   return (
-    <div className="entries page-in">
-      <div className="toolbar row between">
-        <h3>Entries</h3>
-        <div className="search">
-          <span className="search-ico" aria-hidden>
-            🔎
-          </span>
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search by name, serial, model…"
-          />
+    <div className="page">
+      <div className="page-head">
+        <div>
+          <h1>Entries</h1>
+          <p className="muted">
+            Audit log of assignments, returns, transfers and service events.
+          </p>
         </div>
       </div>
 
-      {loading && showSkel ? (
-        <div className="table-wrap pro">
-          <table className="table pro">
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Name</th>
-                <th>Serial</th>
-                <th>Dept</th>
-                <th>Owner</th>
-                <th>From → To</th>
-                <th>By</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Array.from({ length: 6 }).map((_, i) => (
-                <tr key={i}>
-                  <td>
-                    <div className="skel" style={{ height: 12, width: 120, borderRadius: 6 }} />
-                  </td>
-                  <td>
-                    <div className="skel" style={{ height: 12, width: 180, borderRadius: 6 }} />
-                  </td>
-                  <td>
-                    <div className="skel" style={{ height: 12, width: 120, borderRadius: 6 }} />
-                  </td>
-                  <td>
-                    <div className="skel" style={{ height: 12, width: 100, borderRadius: 6 }} />
-                  </td>
-                  <td>
-                    <div className="skel" style={{ height: 12, width: 120, borderRadius: 6 }} />
-                  </td>
-                  <td>
-                    <div className="skel" style={{ height: 12, width: 150, borderRadius: 6 }} />
-                  </td>
-                  <td>
-                    <div className="skel" style={{ height: 12, width: 120, borderRadius: 6 }} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="table-wrap pro">
-          <table className="table pro">
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Name</th>
-                <th>Serial</th>
-                <th>Dept</th>
-                <th>Owner</th>
-                <th>From → To</th>
-                <th>By</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map((r) => (
-                <tr
-                  key={r.item_id ?? r.serial_no ?? r.name}
-                  className="row-click"
-                  onClick={() => openPreview(r)}
-                  tabIndex={0}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") openPreview(r);
-                  }}
-                  title="View details"
-                >
-                  <td>{fmtDate(r.created_at)}</td>
-                  <td>{r.name}</td>
-                  <td>{r.serial_no || "-"}</td>
-                  <td>{r.department || "-"}</td>
-                  <td>{r.owner || "-"}</td>
-                  <td>{(r.transfer_from || "-") + " → " + (r.transfer_to || "-")}</td>
-                  <td>{r.created_by || "-"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Preview modal */}
-      {previewOpen && previewItem && (
-        <div className="preview-wrap" role="dialog" aria-modal="true" aria-label="Asset preview">
-          <div className={`preview ${closing ? "modal-out" : "modal-in"}`}>
-            <div className="preview-head">
-              <div>
-                {/* Removed ID pill; show name only */}
-                <h3>{previewItem.name}</h3>
-                <div className="muted small">
-                  By <b>{previewItem.created_by || "-"}</b> on{" "}
-                  <b>{fmtDate(previewItem.created_at)}</b>
-                </div>
-              </div>
-              <button className="btn ghost" onClick={onClosePreview} aria-label="Close">
-                ✕
-              </button>
-            </div>
-
-            <div className="preview-body">
-              {/* Left: photo viewer */}
-              <div className="viewer">
-                <div className="main">
-                  {previewPhotos.length ? (
-                    <>
-                      <button
-                        className="nav prev"
-                        aria-label="Previous"
-                        onClick={() =>
-                          setActiveIdx((i) => (i - 1 + previewPhotos.length) % previewPhotos.length)
-                        }
-                      >
-                        ‹
-                      </button>
-                      <img
-                        src={`${apiBase}${
-                          previewPhotos[activeIdx].photo_url ?? previewPhotos[activeIdx]
-                        }`}
-                        alt=""
-                      />
-                      <button
-                        className="nav next"
-                        aria-label="Next"
-                        onClick={() =>
-                          setActiveIdx((i) => (i + 1) % previewPhotos.length)
-                        }
-                      >
-                        ›
-                      </button>
-                    </>
-                  ) : (
-                    <div className="noimg">No photos</div>
-                  )}
-                </div>
-
-                {previewPhotos.length > 1 && (
-                  <div className="thumbs">
-                    {previewPhotos.map((p, idx) => {
-                      const url = p.photo_url ?? p;
-                      return (
-                        <button
-                          key={p.id ?? url}
-                          className={`tbtn ${idx === activeIdx ? "active" : ""}`}
-                          onClick={() => setActiveIdx(idx)}
-                          title={`Photo ${idx + 1}`}
-                        >
-                          <img src={`${apiBase}${url}`} alt="" />
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {previewPhotos.length > 0 && (
-                  <div className="open-full">
-                    <a
-                      href={`${apiBase}${
-                        previewPhotos[activeIdx].photo_url ?? previewPhotos[activeIdx]
-                      }`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="btn"
-                      title="Open original"
-                    >
-                      Open full size
-                    </a>
-                  </div>
-                )}
-              </div>
-
-              {/* Right: details */}
-              <div className="details">
-                <div className="kv">
-                  {/* Removed "Item ID" row */}
-                  <label>Name</label>
-                  <div>{previewItem.name}</div>
-                  <label>Quantity</label>
-                  <div>{previewItem.quantity}</div>
-                  <label>Serial</label>
-                  <div>{previewItem.serial_no || "-"}</div>
-                  <label>Model</label>
-                  <div>{previewItem.model_no || "-"}</div>
-                  <label>Department</label>
-                  <div>{previewItem.department || "-"}</div>
-                  <label>Owner</label>
-                  <div>{previewItem.owner || "-"}</div>
-                  <label>Transfer</label>
-                  <div>
-                    {(previewItem.transfer_from || "-") + " → " + (previewItem.transfer_to || "-")}
-                  </div>
-                </div>
-                <div className="notes">
-                  <label>Notes</label>
-                  <div className="note-box">
-                    {previewItem.notes ? previewItem.notes : <span className="muted">—</span>}
-                  </div>
-                </div>
-              </div>
-            </div>
+      <div className="card card-elev">
+        <div className="card-head">
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+            <h3 className="card-title">Recent entries</h3>
+            <input
+              className="input"
+              style={{ width: 260 }}
+              placeholder="Search item, person, user, notes…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
           </div>
-          <div
-            className={`preview-backdrop ${closing ? "backdrop-out" : "backdrop-in"}`}
-            onClick={onClosePreview}
-          />
         </div>
-      )}
+        <div className="card-body">
+          {err && <div className="alert error" style={{ marginBottom: 12 }}>{err}</div>}
+
+          {loading ? (
+            <div className="muted">Loading…</div>
+          ) : filtered.length === 0 ? (
+            <div className="empty">No entries yet</div>
+          ) : (
+            <>
+              <div className="table-wrap">
+                <table className="table table-modern">
+                  <thead>
+                    <tr>
+                      <th>When</th>
+                      <th>Event</th>
+                      <th>Item</th>
+                      <th>From</th>
+                      <th>To</th>
+                      <th>By</th>
+                      <th>Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pagedRows.map((r) => (
+                      <tr key={r.id}>
+                        <td className="mono">{r.event_time}</td>
+                        <td>{r.event}</td>
+                        <td className="mono">{r.item_id}</td>
+                        <td>{r.from_holder || "—"}</td>
+                        <td>{r.to_holder || "—"}</td>
+                        <td>{r.by_user || "—"}</td>
+                        <td className="wrap">{r.notes || ""}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pagination */}
+              <div
+                className="row"
+                style={{
+                  marginTop: 12,
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <span className="muted">Rows per page:</span>
+                  <select
+                    className="input"
+                    style={{ width: 80 }}
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setPage(1);
+                    }}
+                  >
+                    <option value={10}>10</option>
+                    <option value={20}>20</option>
+                    <option value={50}>50</option>
+                  </select>
+                </div>
+                <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <span className="muted">
+                    Page {page} of {totalPages}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    disabled={page <= 1}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  >
+                    ◀
+                  </button>
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    disabled={page >= totalPages}
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  >
+                    ▶
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

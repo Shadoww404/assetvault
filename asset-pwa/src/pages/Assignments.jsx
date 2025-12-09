@@ -10,6 +10,7 @@ import {
   returnAssignment,
   transferAssignment,
 } from "../api";
+import errorText from "../ui/errorText";
 import FancySelect from "../ui/FancySelect.jsx";
 
 function cls(...c) { return c.filter(Boolean).join(" "); }
@@ -74,7 +75,7 @@ export default function AssignmentsPage() {
         const { data } = await listPeople({ dept_id: depId || undefined, q: q || undefined, limit: 60 });
         if (on) setPeople(data);
       } catch (e) {
-        if (on) setErr(e?.response?.data?.detail || "Failed to load people");
+        if (on) setErr(errorText(e, "Failed to load people"));
       } finally {
         if (on) setLoadingPeople(false);
       }
@@ -82,7 +83,7 @@ export default function AssignmentsPage() {
     return () => { on = false; };
   }, [depId, q]);
 
-  // person + history  (fixed try/catch/finally)
+  // person + history
   useEffect(() => {
     if (!pid) { setPerson(null); setHistory([]); return; }
     let on = true;
@@ -97,7 +98,7 @@ export default function AssignmentsPage() {
       } catch (e) {
         if (!on) return;
         const status = e?.response?.status;
-        const detail = e?.response?.data?.detail || e?.message || "Failed to load person";
+        const detail = errorText(e, "Failed to load person");
         console.error("getPerson/getPersonHistory failed:", e);
         setErr(detail);
         if (status === 404) {
@@ -105,7 +106,6 @@ export default function AssignmentsPage() {
           setPerson(null);
           setHistory([]);
         }
-        // 401 handled at app shell via /auth/me
       } finally {
         if (!on) return;
         setBusy(false);
@@ -161,7 +161,7 @@ export default function AssignmentsPage() {
       await assignToPerson({ item_id: picked.item_id || picked, person_id: pid, due_back_date: due || null, notes: notes || null });
       setFindQ(""); setFindOpts([]); setPicked(null); setDue(""); setNotes("");
       await refreshHistory();
-    } catch (e2) { setErr(e2?.response?.data?.detail || "Assignment failed"); }
+    } catch (e2) { setErr(errorText(e2, "Assignment failed")); }
     finally { setBusy(false); }
   };
 
@@ -169,7 +169,7 @@ export default function AssignmentsPage() {
     if (!confirm(`Mark ${row.item_id} returned from ${person?.full_name}?`)) return;
     setBusy(true); setErr("");
     try { await returnAssignment({ assignment_id: row.id, item_id: row.item_id, notes: "" }); await refreshHistory(); }
-    catch (e2) { setErr(e2?.response?.data?.detail || "Return failed"); }
+    catch (e2) { setErr(errorText(e2, "Return failed")); }
     finally { setBusy(false); }
   };
 
@@ -182,7 +182,7 @@ export default function AssignmentsPage() {
     try {
       await transferAssignment({ item_id: xferItemId, to_person_id: xferTo.id, due_back_date: xferDue || null, notes: xferNotes || null });
       setXferOpen(false); await refreshHistory();
-    } catch (e2) { setErr(e2?.response?.data?.detail || "Transfer failed"); }
+    } catch (e2) { setErr(errorText(e2, "Transfer failed")); }
     finally { setBusy(false); }
   };
 
@@ -196,7 +196,7 @@ export default function AssignmentsPage() {
       setQtPersonQ(""); setQtPeople([]); setQtPerson(null);
       setQtDue(""); setQtNotes("");
       if (pid === qtPerson.id) await refreshHistory();
-    } catch (e2) { setErr(e2?.response?.data?.detail || "Transfer failed"); }
+    } catch (e2) { setErr(errorText(e2, "Transfer failed")); }
     finally { setQtBusy(false); }
   };
 
