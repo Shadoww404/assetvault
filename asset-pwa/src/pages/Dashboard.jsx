@@ -54,6 +54,7 @@ export default function DashboardPage() {
     };
   }, []);
 
+  // ---------- Derived data ----------
   const usageData = useMemo(() => {
     if (!summary) return [];
     return [
@@ -62,33 +63,79 @@ export default function DashboardPage() {
     ];
   }, [summary]);
 
+  // ✅ merge all unknowns into a single "Other" bucket
   const categoryData = useMemo(() => {
     if (!summary) return [];
-    return (summary.by_category || []).map((c) => ({
-      name: c.category,
-      value: c.total,
-      in_use: c.in_use,
-    }));
+
+    const buckets = {};
+
+    for (const c of summary.by_category || []) {
+      let key = c.category;
+
+      // Normalize: null / empty / weird → "Other"
+      if (
+        !key ||
+        key === "Unknown" ||
+        key === "Uncategorised" ||
+        key === "Uncategorized"
+      ) {
+        key = "Other";
+      }
+
+      // If backend sends some random name we don't style, push into Other too
+      if (!CATEGORY_COLORS[key] && key !== "Other") {
+        key = "Other";
+      }
+
+      if (!buckets[key]) {
+        buckets[key] = {
+          name: key,
+          value: 0,
+          in_use: 0,
+        };
+      }
+      buckets[key].value += c.total || 0;
+      buckets[key].in_use += c.in_use || 0;
+    }
+
+    return Object.values(buckets);
   }, [summary]);
 
+  // Build rows for "in use by company & category" stacked bar
   const companyData = useMemo(() => {
     if (!summary) return { rows: [], cats: [] };
 
-    const cats = new Set((summary.by_category || []).map((c) => c.category));
+    const catsSet = new Set();
+
     const rows = (summary.by_company || []).map((c) => {
       const row = {
         department: c.department,
         total: c.total,
         in_use: c.in_use,
       };
-      (c.categories || []).forEach((k) => {
-        row[k.category] = k.in_use;
-        cats.add(k.category);
+      (c.categories || []).forEach((entry) => {
+        let catKey = entry.category;
+
+        if (
+          !catKey ||
+          catKey === "Unknown" ||
+          catKey === "Uncategorised" ||
+          catKey === "Uncategorized"
+        ) {
+          catKey = "Other";
+        }
+        if (!CATEGORY_COLORS[catKey] && catKey !== "Other") {
+          catKey = "Other";
+        }
+
+        row[catKey] = entry.in_use;
+        catsSet.add(catKey);
       });
       return row;
     });
 
-    return { rows, cats: Array.from(cats) };
+    const cats = Array.from(catsSet);
+    return { rows, cats };
   }, [summary]);
 
   return (
@@ -97,7 +144,8 @@ export default function DashboardPage() {
         <div>
           <h1>Asset Dashboard</h1>
           <p className="muted">
-            High-level view of equipment usage by company, category and status.
+            High-level view of equipment usage by department, category, and
+            status.
           </p>
         </div>
       </div>
@@ -108,7 +156,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* KPIs */}
+      {/* KPI cards */}
       <div
         className="card-row"
         style={{
@@ -164,7 +212,7 @@ export default function DashboardPage() {
             <h3 className="card-title">Usage breakdown</h3>
           </div>
           <div className="card-body">
-            {loading ? (
+            {loading || !summary ? (
               <div className="muted">Loading…</div>
             ) : (
               <div style={{ width: "100%", height: 260 }}>
@@ -203,7 +251,7 @@ export default function DashboardPage() {
             <h3 className="card-title">By category</h3>
           </div>
           <div className="card-body">
-            {loading ? (
+            {loading || !summary ? (
               <div className="muted">Loading…</div>
             ) : (
               <div style={{ width: "100%", height: 260 }}>
@@ -235,26 +283,27 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Company / department stacked bar */}
+      {/* Department stacked bar */}
       <div className="card card-elev">
         <div className="card-head">
-          <h3 className="card-title">In use by company &amp; category</h3>
+          <h3 className="card-title">In use by department & category</h3>
           <p className="muted" style={{ marginTop: 4 }}>
-            Each bar is a company; colours show categories currently in use.
+            Each bar is a department; colours show how many in-use devices of
+            each category.
           </p>
         </div>
         <div className="card-body">
-          {loading ? (
+          {loading || !summary ? (
             <div className="muted">Loading…</div>
-          ) : !summary || companyData.rows.length === 0 ? (
+          ) : companyData.rows.length === 0 ? (
             <div className="empty">No data yet</div>
           ) : (
             <div style={{ width: "100%", height: 320 }}>
               <ResponsiveContainer>
-                <BarChart data={companyData.rows} stackOffset="expand">
+                <BarChart data={companyData.rows} stackOffset="none">
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="department" />
-                  <YAxis hide />
+                  <YAxis allowDecimals={false} />
                   <Tooltip />
                   <Legend />
                   {companyData.cats.map((cat, index) => {

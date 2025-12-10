@@ -8,6 +8,7 @@ import {
   listServiceOverview,
 } from "../api";
 import errorText from "../ui/errorText";
+import { usePagination, PaginationControls } from "../ui/pagination";
 
 function pillStyle(status) {
   if (status === "ok")
@@ -25,10 +26,6 @@ export default function ServicesPage() {
   const [ovSearch, setOvSearch] = useState("");
   const [ovSort, setOvSort] = useState("due-first"); // due-first | recent-first | name | dept
   const [showOnlyDue, setShowOnlyDue] = useState(false);
-
-  // pagination for overview
-  const [ovPage, setOvPage] = useState(1);
-  const [ovPageSize, setOvPageSize] = useState(15);
 
   useEffect(() => {
     let on = true;
@@ -98,25 +95,17 @@ export default function ServicesPage() {
     return a;
   }, [overview, ovSearch, ovSort, showOnlyDue]);
 
-  // reset page when filters change
-  useEffect(() => {
-    setOvPage(1);
-  }, [ovSearch, ovSort, showOnlyDue, overview.length]);
-
-  const ovTotalPages = Math.max(
-    1,
-    Math.ceil((filteredOverview.length || 0) / ovPageSize)
-  );
-
-  // clamp page if needed
-  useEffect(() => {
-    if (ovPage > ovTotalPages) setOvPage(ovTotalPages);
-  }, [ovPage, ovTotalPages]);
-
-  const paginatedOverview = useMemo(() => {
-    const start = (ovPage - 1) * ovPageSize;
-    return filteredOverview.slice(start, start + ovPageSize);
-  }, [filteredOverview, ovPage, ovPageSize]);
+  // Shared pagination hook for overview table
+  const {
+    page: ovPage,
+    pageSize: ovPageSize,
+    setPageSize: setOvPageSize,
+    pageCount: ovTotalPages,
+    total: ovTotal,
+    rows: paginatedOverview,
+    next: ovNext,
+    prev: ovPrev,
+  } = usePagination(filteredOverview, 15);
 
   // ---- Detail panel ----
   const [q, setQ] = useState("");
@@ -143,7 +132,9 @@ export default function ServicesPage() {
       try {
         const { data } = await searchItemsLite(q);
         setOpts((data || []).slice(0, 8));
-      } catch {}
+      } catch {
+        // ignore
+      }
     }, 220);
     return () => clearTimeout(t);
   }, [q]);
@@ -185,13 +176,16 @@ export default function ServicesPage() {
       });
       setNotes("");
       setLocation("");
+
       await Promise.all([
         loadData(picked.item_id),
         (async () => {
           try {
             const { data } = await listServiceOverview();
             setOverview(data || []);
-          } catch {}
+          } catch {
+            // ignore
+          }
         })(),
       ]);
     } catch (e2) {
@@ -269,6 +263,7 @@ export default function ServicesPage() {
 
         <div className="card-body">
           {ovErr && <div className="alert error">{ovErr}</div>}
+
           {ovLoading ? (
             <div className="table-wrap">
               <table className="table table-modern">
@@ -388,57 +383,17 @@ export default function ServicesPage() {
             </div>
           )}
 
-          {/* Pagination controls */}
+          {/* Pagination controls using shared component */}
           {!ovLoading && filteredOverview.length > 0 && (
-            <div
-              className="row"
-              style={{
-                marginTop: 12,
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-            >
-              <div className="row" style={{ gap: 8, alignItems: "center" }}>
-                <span className="muted">Rows per page:</span>
-                <select
-                  className="input"
-                  style={{ width: 80 }}
-                  value={ovPageSize}
-                  onChange={(e) => {
-                    setOvPageSize(Number(e.target.value));
-                    setOvPage(1);
-                  }}
-                >
-                  <option value={10}>10</option>
-                  <option value={15}>15</option>
-                  <option value={25}>25</option>
-                  <option value={50}>50</option>
-                </select>
-              </div>
-              <div className="row" style={{ gap: 8, alignItems: "center" }}>
-                <span className="muted">
-                  Page {ovPage} of {ovTotalPages}
-                </span>
-                <button
-                  type="button"
-                  className="btn ghost"
-                  disabled={ovPage <= 1}
-                  onClick={() => setOvPage((p) => Math.max(1, p - 1))}
-                >
-                  ◀
-                </button>
-                <button
-                  type="button"
-                  className="btn ghost"
-                  disabled={ovPage >= ovTotalPages}
-                  onClick={() =>
-                    setOvPage((p) => Math.min(ovTotalPages, p + 1))
-                  }
-                >
-                  ▶
-                </button>
-              </div>
-            </div>
+            <PaginationControls
+              page={ovPage}
+              pageCount={ovTotalPages}
+              pageSize={ovPageSize}
+              setPageSize={setOvPageSize}
+              total={ovTotal}
+              next={ovNext}
+              prev={ovPrev}
+            />
           )}
         </div>
       </div>

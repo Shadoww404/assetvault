@@ -100,6 +100,7 @@ export const updatePerson = (id, body) =>
 export const deletePerson = (id) =>
   api.delete(`/people/${id}`);
 
+
 // ---- Users (admin) ----
 export const listUsers = () => api.get("/users");
 export const createUser = (body) => api.post("/users", body);

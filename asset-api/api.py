@@ -1006,30 +1006,47 @@ def delete_department(dept_id: int, _admin = Depends(require_admin)):
         cur.close(); conn.close()
 
 @app.get("/people", response_model=List[PersonOut])
-def list_people(dept_id: Optional[int] = None, q: Optional[str] = None, limit: int = 100,
-                user = Depends(get_current_user)):
-    conn = get_conn(); cur = conn.cursor()
-    sql = """
-      SELECT p.id, p.emp_code, p.full_name, p.department_id, p.email, p.phone, p.status,
-             d.name AS department_name
-      FROM people p
-      LEFT JOIN departments d ON d.id = p.department_id
-      WHERE 1=1
-    """
-    args = []
-    if dept_id:
-        sql += " AND p.department_id=%s"
-        args.append(dept_id)
-    if q:
-        like = f"%{q}%"
-        sql += " AND (p.full_name LIKE %s OR p.emp_code LIKE %s)"
-        args.extend([like, like])
-    sql += " ORDER BY p.full_name ASC LIMIT %s"
-    args.append(int(limit))
-    cur.execute(sql, tuple(args))
-    rows = cur.fetchall()
-    cur.close(); conn.close()
-    return [row_to_person(r) for r in rows]
+def list_people(
+    dept_id: Optional[int] = None,
+    q: Optional[str] = None,
+    limit: int = 100,
+    include_inactive: bool = False,
+    user=Depends(get_current_user),
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        sql = """
+          SELECT p.id, p.emp_code, p.full_name, p.department_id, p.email, p.phone, p.status,
+                 d.name AS department_name
+          FROM people p
+          LEFT JOIN departments d ON d.id = p.department_id
+          WHERE 1=1
+        """
+        args: list[Any] = []
+
+        # hide inactive by default
+        if not include_inactive:
+            sql += " AND (p.status IS NULL OR p.status <> 'inactive')"
+
+        if dept_id:
+            sql += " AND p.department_id=%s"
+            args.append(dept_id)
+
+        if q:
+            like = f"%{q}%"
+            sql += " AND (p.full_name LIKE %s OR p.emp_code LIKE %s)"
+            args.extend([like, like])
+
+        sql += " ORDER BY p.full_name ASC LIMIT %s"
+        args.append(int(limit))
+
+        cur.execute(sql, tuple(args))
+        rows = cur.fetchall()
+        return [row_to_person(r) for r in rows]
+    finally:
+        cur.close()
+        conn.close()
 
 @app.get("/people/{person_id}", response_model=PersonOut)
 def get_person(person_id: int, user = Depends(get_current_user)):
@@ -1120,20 +1137,143 @@ def update_person(person_id: int, body: PersonIn, _admin = Depends(require_admin
         cur.close(); conn.close()
     return get_person(person_id)
 
-@app.delete("/people/{person_id}", status_code=204)
-def delete_person(person_id: int, _admin = Depends(require_admin)):
-    conn = get_conn(); cur = conn.cursor()
+@app.get("/people/{person_id}/active-items")
+def get_person_active_items(person_id: int, user=Depends(get_current_user)):
+    """
+    Utility endpoint:
+    List active items currently held by this person.
+    """
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
     try:
-        cur.execute("SELECT 1 FROM assignments WHERE person_id=%s LIMIT 1", (person_id,))
-        if cur.fetchone():
-            raise HTTPException(400, "Person has assignment history; cannot delete")
+        cur.execute("""
+            SELECT 
+                a.id AS assignment_id,
+                a.item_id,
+                i.name,
+                a.assigned_at,
+                a.due_back_date
+            FROM assignments a
+            JOIN items i ON i.item_id = a.item_id
+            WHERE a.person_id=%s AND a.returned_at IS NULL
+            ORDER BY a.assigned_at DESC, a.id DESC
+        """, (person_id,))
+        rows = cur.fetchall()
+        return rows
+    finally:
+        cur.close()
+        conn.close()
+
+@app.get("/people", response_model=List[PersonOut])
+def list_people(
+    dept_id: Optional[int] = None,
+    q: Optional[str] = None,
+    limit: int = 100,
+    include_inactive: bool = False,
+    user=Depends(get_current_user),
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        sql = """
+          SELECT p.id, p.emp_code, p.full_name, p.department_id, p.email, p.phone, p.status,
+                 d.name AS department_name
+          FROM people p
+          LEFT JOIN departments d ON d.id = p.department_id
+          WHERE 1=1
+        """
+        args: list[Any] = []
+
+        # hide inactive by default
+        if not include_inactive:
+            sql += " AND (p.status IS NULL OR p.status <> 'inactive')"
+
+        if dept_id:
+            sql += " AND p.department_id=%s"
+            args.append(dept_id)
+
+        if q:
+            like = f"%{q}%"
+            sql += " AND (p.full_name LIKE %s OR p.emp_code LIKE %s)"
+            args.extend([like, like])
+
+        sql += " ORDER BY p.full_name ASC LIMIT %s"
+        args.append(int(limit))
+
+        cur.execute(sql, tuple(args))
+        rows = cur.fetchall()
+        return [row_to_person(r) for r in rows]
+    finally:
+        cur.close()
+        conn.close()
+
+# ------------------------------------------------------------------
+# People – delete (admin only, with active-equipment safety check)
+# ------------------------------------------------------------------
+from fastapi import HTTPException
+
+@app.delete("/people/{person_id}", status_code=204)
+def delete_person(person_id: int, _admin=Depends(require_admin)):
+    """
+    Admin-only delete:
+    - Block if the person still has *active* equipment (assignments with returned_at IS NULL).
+    - Allow delete if everything is returned / transferred, even if there is history.
+    - On conflict, return detail = { message, active_items: [...] } for the UI modal.
+    """
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        # 1) Is the person there?
+        cur.execute(
+            "SELECT id, full_name FROM people WHERE id=%s",
+            (person_id,),
+        )
+        person = cur.fetchone()
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found")
+
+        # 2) Check for ACTIVE assignments only (returned_at IS NULL)
+        cur.execute(
+            """
+            SELECT
+                a.id AS assignment_id,
+                COALESCE(i.item_id, '') AS item_id,
+                COALESCE(i.name, '') AS item_name,
+                COALESCE(i.serial_no, '') AS serial_no
+            FROM assignments a
+            LEFT JOIN items i ON i.item_id = a.item_id
+            WHERE a.person_id = %s
+              AND a.returned_at IS NULL
+            """,
+            (person_id,),
+        )
+        active_items = cur.fetchall()
+
+        if active_items:
+            # 409 so the frontend can show a "cannot delete" popup with the list
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": (
+                        "This person still has active equipment assigned. "
+                        "Please transfer or return all items before deleting."
+                    ),
+                    "active_items": active_items,
+                },
+            )
+
+        # 3) No active gear → safe to delete
         cur.execute("DELETE FROM people WHERE id=%s", (person_id,))
         if cur.rowcount == 0:
-            raise HTTPException(404, "Person not found")
+            # race condition: person disappeared between checks
+            raise HTTPException(status_code=404, detail="Person not found")
+
         conn.commit()
         return
     finally:
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
+
 
 @app.get("/items/search-lite", response_model=List[dict])
 def search_items_lite(q: str, limit: int = 20, user = Depends(get_current_user)):
@@ -1458,16 +1598,26 @@ def services_overview(user = Depends(get_current_user)):
 # --------------------------------------------------------------------------
 @app.get("/dashboard/summary")
 def dashboard_summary(user = Depends(get_current_user)):
-    conn = get_conn()
-    try:
-        cur = conn.cursor(dictionary=True)
+    """
+    Summary used by the React Dashboard:
 
-        # Overall
+    - overall: total / in-use / available
+    - by_category: one row per category (Desktop, Laptop, Printer, UPS, Other)
+    - by_company: one row per department, with nested category breakdown
+
+    Categories are normalised to:
+      Desktop | Laptop | Printer | UPS | Other
+    """
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        # ---------- Overall ----------
         cur.execute("SELECT COUNT(*) AS total_items FROM items")
         total_items = cur.fetchone()["total_items"] or 0
 
+        # items currently assigned (returned_at IS NULL)
         cur.execute("""
-            SELECT COUNT(DISTINCT a.item_id_int) AS in_use
+            SELECT COUNT(DISTINCT a.item_id) AS in_use
             FROM assignments a
             WHERE a.returned_at IS NULL
         """)
@@ -1476,42 +1626,61 @@ def dashboard_summary(user = Depends(get_current_user)):
         available = total_items - in_use
         in_use_pct = round((in_use * 100.0 / total_items), 1) if total_items else 0.0
 
-        # By category (uses items.category + assignments.item_id_int like before)
-        cur.execute("""
+        # Helper: normalise category names nicely for charts
+        category_case_expr = """
+            CASE
+                WHEN COALESCE(i.category, '') <> '' THEN i.category
+                WHEN LOWER(i.name) LIKE '%laptop%'   THEN 'Laptop'
+                WHEN LOWER(i.name) LIKE '%desktop%' 
+                  OR LOWER(i.name) LIKE '%pc%'       THEN 'Desktop'
+                WHEN LOWER(i.name) LIKE '%printer%'  THEN 'Printer'
+                WHEN LOWER(i.name) LIKE '%ups%'      THEN 'UPS'
+                ELSE 'Other'
+            END
+        """
+
+        # ---------- By category ----------
+        cur.execute(f"""
             SELECT
-                COALESCE(i.category, 'Uncategorised') AS category,
-                COUNT(*) AS total,
-                SUM(
-                    CASE WHEN a.returned_at IS NULL AND a.item_id_int IS NOT NULL
-                         THEN 1 ELSE 0 END
-                ) AS in_use
+              {category_case_expr} AS category,
+              COUNT(*) AS total,
+              SUM(
+                CASE WHEN a.item_id IS NOT NULL AND a.returned_at IS NULL
+                     THEN 1 ELSE 0 END
+              ) AS in_use
             FROM items i
-            LEFT JOIN assignments a ON a.item_id_int = i.id
+            LEFT JOIN assignments a
+              ON a.item_id = i.item_id
             GROUP BY category
             ORDER BY category
         """)
         cat_rows = cur.fetchall()
-        by_category = [
-            {
-                "category": r["category"],
-                "total": int(r["total"] or 0),
-                "in_use": int(r["in_use"] or 0),
-            }
-            for r in cat_rows
-        ]
 
-        # By company/department + category breakdown
-        cur.execute("""
+        by_category = []
+        for r in cat_rows:
+            total = int(r["total"] or 0)
+            used = int(r["in_use"] or 0)
+            by_category.append({
+                "category": r["category"],
+                "total": total,
+                "in_use": used,
+                "available": total - used,
+                "in_use_pct": round((used * 100.0 / total), 1) if total else 0.0,
+            })
+
+        # ---------- By department/company ----------
+        cur.execute(f"""
             SELECT
-                COALESCE(i.department, 'Unassigned') AS department,
-                COALESCE(i.category, 'Uncategorised') AS category,
-                COUNT(*) AS total,
-                SUM(
-                    CASE WHEN a.returned_at IS NULL AND a.item_id_int IS NOT NULL
-                         THEN 1 ELSE 0 END
-                ) AS in_use
+              COALESCE(i.department, 'Unassigned') AS department,
+              {category_case_expr} AS category,
+              COUNT(*) AS total,
+              SUM(
+                CASE WHEN a.item_id IS NOT NULL AND a.returned_at IS NULL
+                     THEN 1 ELSE 0 END
+              ) AS in_use
             FROM items i
-            LEFT JOIN assignments a ON a.item_id_int = i.id
+            LEFT JOIN assignments a
+              ON a.item_id = i.item_id
             GROUP BY department, category
             ORDER BY department, category
         """)
@@ -1522,20 +1691,30 @@ def dashboard_summary(user = Depends(get_current_user)):
             dept = r["department"]
             cat = r["category"]
             total = int(r["total"] or 0)
-            in_use_cat = int(r["in_use"] or 0)
+            used = int(r["in_use"] or 0)
 
             entry = by_company_map.setdefault(
                 dept,
                 {"department": dept, "total": 0, "in_use": 0, "categories": []},
             )
             entry["total"] += total
-            entry["in_use"] += in_use_cat
-            if in_use_cat:
+            entry["in_use"] += used
+            if used:
                 entry["categories"].append(
-                    {"category": cat, "in_use": in_use_cat}
+                    {
+                        "category": cat,
+                        "total": total,
+                        "in_use": used,
+                    }
                 )
 
-        by_company = list(by_company_map.values())
+        by_company = []
+        for v in by_company_map.values():
+            total = v["total"]
+            used = v["in_use"]
+            v["available"] = total - used
+            v["in_use_pct"] = round((used * 100.0 / total), 1) if total else 0.0
+            by_company.append(v)
 
         return {
             "overall": {
