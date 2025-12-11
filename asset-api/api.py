@@ -2,13 +2,14 @@ from fastapi import (
     FastAPI, HTTPException, UploadFile, File, Form,
     Depends, Path
 )
+from typing import Optional, List, Dict, Any
+from datetime import date, datetime, timedelta
+import os, uuid, shutil
+
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
-from datetime import date, datetime, timedelta
-import os, uuid, shutil
 
 from mysql.connector import InternalError
 from db import get_conn
@@ -139,6 +140,8 @@ class ItemOut(BaseModel):
     created_at: Optional[str] = None
     photo_url: Optional[str] = None
     photos: List[PhotoOut] = Field(default_factory=list)
+    # NEW: persist category explicitly (Desktop / Laptop / Printer / UPS / Other)
+    category: Optional[str] = None
 
 class ItemUpdate(BaseModel):
     name: Optional[str] = None
@@ -150,6 +153,8 @@ class ItemUpdate(BaseModel):
     transfer_from: Optional[str] = None
     transfer_to: Optional[str] = None
     notes: Optional[str] = None
+    # allow updating category
+    category: Optional[str] = None
 
 class DepartmentOut(BaseModel):
     id: int
@@ -196,6 +201,7 @@ class EntryOut(BaseModel):
     by_user: Optional[str] = None
     notes: Optional[str] = None
 
+# Payloads used by /assignments endpoints (matches frontend)
 class AssignIn(BaseModel):
     item_id: str
     person_id: int
@@ -256,18 +262,28 @@ class ServiceOverviewOut(BaseModel):
 # --------------------------------------------------------------------------
 # DB helpers
 # --------------------------------------------------------------------------
+# NOTE: include category at the end
 SELECT_LIST = """
   item_id, name, quantity, serial_no, model_no, department, owner,
-  transfer_from, transfer_to, notes, photo_url, created_by, created_at
+  transfer_from, transfer_to, notes, photo_url, created_by, created_at, category
 """
 
 def _row_to_item(r) -> ItemOut:
     return ItemOut(
-        item_id=r[0], name=r[1], quantity=int(r[2]),
-        serial_no=r[3], model_no=r[4], department=r[5], owner=r[6],
-        transfer_from=r[7], transfer_to=r[8], notes=r[9],
-        photo_url=r[10], created_by=r[11],
+        item_id=r[0],
+        name=r[1],
+        quantity=int(r[2]),
+        serial_no=r[3],
+        model_no=r[4],
+        department=r[5],
+        owner=r[6],
+        transfer_from=r[7],
+        transfer_to=r[8],
+        notes=r[9],
+        photo_url=r[10],
+        created_by=r[11],
         created_at=(r[12].strftime("%Y-%m-%d %H:%M:%S") if r[12] else None),
+        category=r[13],
     )
 
 def _fetch_item(conn, item_id: str) -> ItemOut:
@@ -764,6 +780,8 @@ def create_item(
     transfer_from: Optional[str] = Form(None),
     transfer_to: Optional[str] = Form(None),
     notes: Optional[str] = Form(None),
+    # NEW: accept category from frontend / CSV FormData
+    category: Optional[str] = Form(None),
     user = Depends(get_current_user),
 ):
     new_id = item_id or uuid.uuid4().hex[:8].upper()
@@ -775,10 +793,22 @@ def create_item(
         cur.execute("""
             INSERT INTO items
               (item_id, name, quantity, serial_no, model_no, department, owner,
-               transfer_from, transfer_to, notes, photo_url, created_by, created_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,%s,NOW())
-        """, (new_id, name, quantity, serial_no, model_no, department, owner,
-              transfer_from, transfer_to, notes, user["username"]))
+               transfer_from, transfer_to, notes, photo_url, created_by, created_at, category)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,%s,NOW(),%s)
+        """, (
+            new_id,
+            name,
+            quantity,
+            serial_no,
+            model_no,
+            department,
+            owner,
+            transfer_from,
+            transfer_to,
+            notes,
+            user["username"],
+            category,
+        ))
         conn.commit()
         return _fetch_item(conn, new_id)
     finally:
@@ -803,16 +833,35 @@ def update_item(item_id: str, patch: ItemUpdate, user = Depends(get_current_user
             "transfer_from": patch.transfer_from if patch.transfer_from is not None else row["transfer_from"],
             "transfer_to": patch.transfer_to if patch.transfer_to is not None else row["transfer_to"],
             "notes": patch.notes if patch.notes is not None else row["notes"],
+            "category": patch.category if patch.category is not None else row.get("category"),
         }
         cur2 = conn.cursor()
         cur2.execute("""
             UPDATE items SET
-              name=%s, quantity=%s, serial_no=%s, model_no=%s, department=%s, owner=%s,
-              transfer_from=%s, transfer_to=%s, notes=%s
+              name=%s,
+              quantity=%s,
+              serial_no=%s,
+              model_no=%s,
+              department=%s,
+              owner=%s,
+              transfer_from=%s,
+              transfer_to=%s,
+              notes=%s,
+              category=%s
             WHERE item_id=%s
-        """, (fields["name"], fields["quantity"], fields["serial_no"], fields["model_no"],
-              fields["department"], fields["owner"], fields["transfer_from"], fields["transfer_to"],
-              fields["notes"], item_id))
+        """, (
+            fields["name"],
+            fields["quantity"],
+            fields["serial_no"],
+            fields["model_no"],
+            fields["department"],
+            fields["owner"],
+            fields["transfer_from"],
+            fields["transfer_to"],
+            fields["notes"],
+            fields["category"],
+            item_id,
+        ))
         conn.commit()
         return _fetch_item(conn, item_id)
     finally:
@@ -825,6 +874,7 @@ def update_item_by_serial(serial: str, patch: ItemUpdate, user = Depends(get_cur
         obj = get_item_by_serial(conn, serial)
         if not obj:
             raise HTTPException(404, "Item not found")
+        # reuse main update logic
         return update_item(obj.item_id, patch, user)
     finally:
         conn.close()
@@ -843,6 +893,36 @@ def delete_item(item_id: str, user = Depends(get_current_user)):
         return
     finally:
         cur.close(); conn.close()
+
+# --------------------------------------------------------------------------
+# Lightweight item search (typeahead)
+# --------------------------------------------------------------------------
+@app.get("/items/search-lite")
+def search_items_lite(q: str, limit: int = 20, user = Depends(get_current_user)):
+    """
+    Lightweight search used by Assignments typeahead.
+    Accepts partial item_id / name / serial_no and returns a small list
+    of { item_id, name, serial_no }.
+    """
+    like = f"%{q}%"
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        sql = """
+            SELECT item_id, name, serial_no
+            FROM items
+            WHERE item_id LIKE %s
+               OR serial_no LIKE %s
+               OR name LIKE %s
+            ORDER BY created_at DESC, name
+            LIMIT %s
+        """
+        cur.execute(sql, (like, like, like, int(limit)))
+        rows = cur.fetchall()
+        return rows
+    finally:
+        cur.close()
+        conn.close()
 
 # --------------------------------------------------------------------------
 # Photos
@@ -1023,9 +1103,8 @@ def list_people(
           LEFT JOIN departments d ON d.id = p.department_id
           WHERE 1=1
         """
-        args: list[Any] = []
+        args: List[Any] = []
 
-        # hide inactive by default
         if not include_inactive:
             sql += " AND (p.status IS NULL OR p.status <> 'inactive')"
 
@@ -1164,54 +1243,9 @@ def get_person_active_items(person_id: int, user=Depends(get_current_user)):
         cur.close()
         conn.close()
 
-@app.get("/people", response_model=List[PersonOut])
-def list_people(
-    dept_id: Optional[int] = None,
-    q: Optional[str] = None,
-    limit: int = 100,
-    include_inactive: bool = False,
-    user=Depends(get_current_user),
-):
-    conn = get_conn()
-    cur = conn.cursor()
-    try:
-        sql = """
-          SELECT p.id, p.emp_code, p.full_name, p.department_id, p.email, p.phone, p.status,
-                 d.name AS department_name
-          FROM people p
-          LEFT JOIN departments d ON d.id = p.department_id
-          WHERE 1=1
-        """
-        args: list[Any] = []
-
-        # hide inactive by default
-        if not include_inactive:
-            sql += " AND (p.status IS NULL OR p.status <> 'inactive')"
-
-        if dept_id:
-            sql += " AND p.department_id=%s"
-            args.append(dept_id)
-
-        if q:
-            like = f"%{q}%"
-            sql += " AND (p.full_name LIKE %s OR p.emp_code LIKE %s)"
-            args.extend([like, like])
-
-        sql += " ORDER BY p.full_name ASC LIMIT %s"
-        args.append(int(limit))
-
-        cur.execute(sql, tuple(args))
-        rows = cur.fetchall()
-        return [row_to_person(r) for r in rows]
-    finally:
-        cur.close()
-        conn.close()
-
 # ------------------------------------------------------------------
 # People – delete (admin only, with active-equipment safety check)
 # ------------------------------------------------------------------
-from fastapi import HTTPException
-
 @app.delete("/people/{person_id}", status_code=204)
 def delete_person(person_id: int, _admin=Depends(require_admin)):
     """
@@ -1223,7 +1257,6 @@ def delete_person(person_id: int, _admin=Depends(require_admin)):
     conn = get_conn()
     cur = conn.cursor(dictionary=True)
     try:
-        # 1) Is the person there?
         cur.execute(
             "SELECT id, full_name FROM people WHERE id=%s",
             (person_id,),
@@ -1232,7 +1265,6 @@ def delete_person(person_id: int, _admin=Depends(require_admin)):
         if not person:
             raise HTTPException(status_code=404, detail="Person not found")
 
-        # 2) Check for ACTIVE assignments only (returned_at IS NULL)
         cur.execute(
             """
             SELECT
@@ -1250,7 +1282,6 @@ def delete_person(person_id: int, _admin=Depends(require_admin)):
         active_items = cur.fetchall()
 
         if active_items:
-            # 409 so the frontend can show a "cannot delete" popup with the list
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -1262,10 +1293,8 @@ def delete_person(person_id: int, _admin=Depends(require_admin)):
                 },
             )
 
-        # 3) No active gear → safe to delete
         cur.execute("DELETE FROM people WHERE id=%s", (person_id,))
         if cur.rowcount == 0:
-            # race condition: person disappeared between checks
             raise HTTPException(status_code=404, detail="Person not found")
 
         conn.commit()
@@ -1274,169 +1303,297 @@ def delete_person(person_id: int, _admin=Depends(require_admin)):
         cur.close()
         conn.close()
 
+# --------------------------------------------------------------------------
+# Assignments – models
+# --------------------------------------------------------------------------
+class AssignmentCreate(BaseModel):
+    """
+    We keep the field name item_id for compatibility with the frontend,
+    but this value can be EITHER:
+      - the real item_id (e.g. "IT-LAP-001"), OR
+      - the serial_no (e.g. "MGT-LAP-001-SN").
+    The backend will resolve it.
+    """
+    item_id: str
+    person_id: int
+    due_back_date: Optional[date] = None
+    notes: Optional[str] = None
 
-@app.get("/items/search-lite", response_model=List[dict])
-def search_items_lite(q: str, limit: int = 20, user = Depends(get_current_user)):
-    like = f"%{q}%"
-    conn = get_conn(); cur = conn.cursor()
-    cur.execute("""
-      SELECT item_id, name
-      FROM items
-      WHERE item_id LIKE %s OR name LIKE %s OR serial_no LIKE %s
-      ORDER BY item_id ASC
-      LIMIT %s
-    """, (like, like, like, int(limit)))
-    data = [{"item_id": r[0], "name": r[1]} for r in cur.fetchall()]
-    cur.close(); conn.close()
-    return data
+
+class AssignmentReturn(BaseModel):
+    assignment_id: int
+    item_id: str
+    notes: Optional[str] = None
+
+
+class AssignmentTransfer(BaseModel):
+    """
+    Transfer can also support serial_no and optional from_person_id,
+    but the frontend only uses item_id + to_person_id right now.
+    """
+    item_id: Optional[str] = None
+    serial_no: Optional[str] = None
+    from_person_id: Optional[int] = None
+    to_person_id: int
+    due_back_date: Optional[date] = None
+    notes: Optional[str] = None
 
 # --------------------------------------------------------------------------
-# Assignments + Entries
+# Assign item to person (POST /assignments)
 # --------------------------------------------------------------------------
 @app.post("/assignments", status_code=201)
-def assign_to_person_api(data: AssignIn, user = Depends(get_current_user)):
-    conn = get_conn(); cur = conn.cursor()
+def create_assignment(body: AssignmentCreate, user = Depends(get_current_user)):
+    """
+    Assign an item to a person.
+    Frontend sends { item_id, person_id, due_back_date, notes } where
+    `item_id` may actually be an item_id OR a serial_no typed by the user.
+    """
+    key = (body.item_id or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="item_id is required")
 
-    cur.execute("SELECT name FROM items WHERE item_id=%s", (data.item_id,))
-    row = cur.fetchone()
-    if not row:
-        cur.close(); conn.close()
-        raise HTTPException(404, "Item not found")
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        # 1) Resolve the item: try item_id first, then serial_no
+        cur.execute(
+            """
+            SELECT id, item_id, serial_no, name
+            FROM items
+            WHERE item_id = %s OR serial_no = %s
+            LIMIT 1
+            """,
+            (key, key),
+        )
+        item = cur.fetchone()
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
 
-    target = fetch_person(conn, data.person_id)
-    if not target:
-        cur.close(); conn.close()
-        raise HTTPException(404, "Person not found")
+        real_item_id = item["item_id"]
+        serial = item["serial_no"]
 
-    cur.execute("SELECT 1 FROM assignments WHERE item_id=%s AND returned_at IS NULL", (data.item_id,))
-    if cur.fetchone():
-        cur.close(); conn.close()
-        raise HTTPException(409, "Item is already assigned to someone")
+        # 2) Check that the person exists
+        cur.execute("SELECT id FROM people WHERE id = %s", (body.person_id,))
+        person = cur.fetchone()
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found")
 
-    cur.execute("""
-      INSERT INTO assignments (item_id, person_id, assigned_at, due_back_date, returned_at, notes, assigned_by)
-      VALUES (%s,%s,NOW(), %s, NULL, %s, %s)
-    """, (data.item_id, data.person_id, data.due_back_date, data.notes, user["username"]))
-    conn.commit()
+        # 3) Ensure no active assignment for this item
+        cur.execute(
+            """
+            SELECT id FROM assignments
+            WHERE item_id = %s AND returned_at IS NULL
+            LIMIT 1
+            """,
+            (real_item_id,),
+        )
+        if cur.fetchone():
+            raise HTTPException(
+                status_code=409,
+                detail="Item is already assigned; return or transfer it first",
+            )
 
-    log_entry(conn, "assign", data.item_id, frm=None, to=person_label(target),
-              by_user=user["username"], notes=data.notes)
+        # 4) Insert the new assignment row
+        cur.execute(
+            """
+            INSERT INTO assignments
+                (item_id_int,
+                 serial_no,
+                 person_id,
+                 assigned_at,
+                 due_back_date,
+                 returned_at,
+                 notes,
+                 assigned_by,
+                 item_id)
+            VALUES (%s, %s, %s, NOW(), %s, NULL, %s, %s, %s)
+            """,
+            (
+                item["id"],             # item_id_int (FK to items.id)
+                serial,                 # serial_no
+                body.person_id,         # person_id
+                body.due_back_date,     # due_back_date (can be None)
+                body.notes,             # notes
+                user["username"],       # assigned_by
+                real_item_id,           # item_id (string, e.g. "IT-LAP-001")
+            ),
+        )
+        assignment_id = cur.lastrowid
+        conn.commit()
 
-    cur.close(); conn.close()
-    return {"ok": True}
+        # 5) Log entry
+        target = fetch_person(conn, body.person_id)
+        log_entry(
+            conn,
+            event="assign",
+            item_id=real_item_id,
+            frm=None,
+            to=person_label(target),
+            by_user=user["username"],
+            notes=body.notes or item["name"] or "",
+        )
 
+        return {"id": assignment_id, "status": "ok"}
+    finally:
+        cur.close()
+        conn.close()
+
+# --------------------------------------------------------------------------
+# Return an assignment (POST /assignments/return)
+# --------------------------------------------------------------------------
 @app.post("/assignments/return")
-def return_assignment_api(data: ReturnIn, user = Depends(get_current_user)):
-    conn = get_conn(); cur = conn.cursor(dictionary=True)
+def return_assignment_api(body: AssignmentReturn, user = Depends(get_current_user)):
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        # 1) Ensure assignment exists and matches item, and is still active
+        cur.execute(
+            """
+            SELECT id, person_id, item_id
+            FROM assignments
+            WHERE id = %s AND item_id = %s AND returned_at IS NULL
+            """,
+            (body.assignment_id, body.item_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Active assignment not found")
 
-    cur.execute("""
-      SELECT id, person_id FROM assignments
-      WHERE id=%s AND item_id=%s AND returned_at IS NULL
-    """, (data.assignment_id, data.item_id))
-    row = cur.fetchone()
-    if not row:
-        conn.rollback(); cur.close(); conn.close()
-        raise HTTPException(404, "Active assignment not found")
+        holder = fetch_person(conn, int(row["person_id"])) if row.get("person_id") else None
 
-    holder = fetch_person(conn, int(row["person_id"]))
+        # 2) Mark as returned
+        cur2 = conn.cursor()
+        cur2.execute(
+            """
+            UPDATE assignments
+               SET returned_at = NOW(),
+                   notes = CASE
+                             WHEN %s IS NULL OR %s = '' THEN notes
+                             ELSE TRIM(CONCAT(COALESCE(notes, ''), ' ', %s))
+                           END
+             WHERE id = %s AND item_id = %s
+            """,
+            (body.notes, body.notes, body.notes or "", body.assignment_id, body.item_id),
+        )
+        conn.commit()
 
-    cur2 = conn.cursor()
-    cur2.execute("""
-      UPDATE assignments
-         SET returned_at=NOW(),
-             notes = CASE
-                       WHEN %s IS NULL OR %s='' THEN notes
-                       ELSE TRIM(CONCAT(COALESCE(notes,''), ' ', %s))
-                     END
-       WHERE id=%s AND item_id=%s
-    """, (data.notes, data.notes, data.notes or "", data.assignment_id, data.item_id))
-    conn.commit()
+        # 3) Log entry
+        log_entry(
+            conn,
+            event="return",
+            item_id=row["item_id"],
+            frm=person_label(holder),
+            to="Stock",
+            by_user=user["username"],
+            notes=body.notes or "",
+        )
 
-    log_entry(conn, "return", data.item_id, frm=person_label(holder), to="Stock",
-              by_user=user["username"], notes=data.notes or "")
+        return {"status": "ok"}
+    finally:
+        cur.close()
+        conn.close()
 
-    cur.close(); conn.close()
-    return {"ok": True}
-
+# --------------------------------------------------------------------------
+# Transfer an item to another person (POST /assignments/transfer)
+# --------------------------------------------------------------------------
 @app.post("/assignments/transfer")
-def transfer_assignment_api(data: TransferIn, user = Depends(get_current_user)):
-    conn = get_conn(); cur = conn.cursor(dictionary=True)
+def transfer_assignment_api(body: AssignmentTransfer, user = Depends(get_current_user)):
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        # 1) Resolve item by item_id or serial_no
+        resolved = None
+        if body.item_id:
+            cur.execute(
+                "SELECT id, item_id, serial_no, name FROM items WHERE item_id = %s",
+                (body.item_id,),
+            )
+            resolved = cur.fetchone()
+        elif body.serial_no:
+            cur.execute(
+                "SELECT id, item_id, serial_no, name FROM items WHERE serial_no = %s",
+                (body.serial_no,),
+            )
+            resolved = cur.fetchone()
 
-    resolved = None
-    if data.item_id:
-        cur.execute("SELECT item_id, name FROM items WHERE item_id=%s", (data.item_id,))
-        resolved = cur.fetchone()
-    elif data.serial_no:
-        cur.execute("SELECT item_id, name FROM items WHERE serial_no=%s", (data.serial_no,))
-        resolved = cur.fetchone()
+        if not resolved:
+            raise HTTPException(status_code=404, detail="Item not found")
 
-    if not resolved:
-        cur.close(); conn.close()
-        raise HTTPException(404, "Item not found")
+        real_item_id = resolved["item_id"]
+        item_name = resolved["name"] or ""
 
-    item_id = resolved["item_id"]
-    item_name = resolved["name"] or (data.item_name_for_log or "")
+        # 2) Check target person exists
+        cur.execute("SELECT id FROM people WHERE id = %s", (body.to_person_id,))
+        person = cur.fetchone()
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found")
 
-    target = fetch_person(conn, data.to_person_id)
-    if not target:
-        cur.close(); conn.close()
-        raise HTTPException(404, "Target person not found")
+        # 3) Current active assignment (if any)
+        current = active_assignment(conn, real_item_id)
 
-    current = active_assignment(conn, item_id)
-    if data.from_person_id is not None:
-        if not current or int(current["person_id"]) != int(data.from_person_id):
-            cur.close(); conn.close()
-            raise HTTPException(409, "Serial is not currently held by the selected FROM person")
+        # Optional: if from_person_id explicitly given, verify it
+        if body.from_person_id is not None:
+            if not current or int(current["person_id"]) != int(body.from_person_id):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Item is not currently held by the specified FROM person",
+                )
 
-    cur2 = conn.cursor()
+        cur2 = conn.cursor()
 
-    if current:
-        cur2.execute("UPDATE assignments SET returned_at=NOW() WHERE id=%s", (current["id"],))
+        # 4) Close existing assignment
+        if current:
+            cur2.execute(
+                "UPDATE assignments SET returned_at = NOW() WHERE id = %s",
+                (current["id"],),
+            )
 
-    cur2.execute("""
-      INSERT INTO assignments (item_id, person_id, assigned_at, due_back_date, returned_at, notes, assigned_by)
-      VALUES (%s,%s,NOW(), %s, NULL, %s, %s)
-    """, (item_id, data.to_person_id, data.due_back_date, data.notes, user["username"]))
-    conn.commit()
+        # 5) Insert new assignment row for the new holder
+        cur2.execute(
+            """
+            INSERT INTO assignments
+                (item_id_int,
+                 serial_no,
+                 person_id,
+                 assigned_at,
+                 due_back_date,
+                 returned_at,
+                 notes,
+                 assigned_by,
+                 item_id)
+            VALUES (%s, %s, %s, NOW(), %s, NULL, %s, %s, %s)
+            """,
+            (
+                resolved["id"],          # item_id_int
+                resolved["serial_no"],   # serial_no
+                body.to_person_id,       # person_id
+                body.due_back_date,      # due_back_date
+                body.notes,              # notes
+                user["username"],        # assigned_by
+                real_item_id,            # item_id
+            ),
+        )
+        new_id = cur2.lastrowid
+        conn.commit()
 
-    log_entry(
-        conn, "transfer", item_id,
-        frm=person_label(fetch_person(conn, int(current["person_id"])) if current else None),
-        to=person_label(target),
-        by_user=user["username"],
-        notes=(data.notes or "").strip() or item_name
-    )
+        # 6) Log entry
+        frm_label = person_label(fetch_person(conn, int(current["person_id"]))) if current else None
+        to_label = person_label(fetch_person(conn, body.to_person_id))
 
-    cur.close(); conn.close()
-    return {"ok": True}
+        log_entry(
+            conn,
+            event="transfer",
+            item_id=real_item_id,
+            frm=frm_label,
+            to=to_label,
+            by_user=user["username"],
+            notes=(body.notes or "").strip() or item_name,
+        )
 
-# --------------------------------------------------------------------------
-# Entries
-# --------------------------------------------------------------------------
-@app.get("/entries", response_model=List[EntryOut])
-def list_entries(limit: int = 200, user = Depends(get_current_user)):
-    conn = get_conn(); cur = conn.cursor()
-    cur.execute("""
-      SELECT id, event_time, event, item_id, from_holder, to_holder, by_user, notes
-      FROM entries
-      ORDER BY event_time DESC, id DESC
-      LIMIT %s
-    """, (int(limit),))
-    rows = cur.fetchall()
-    cur.close(); conn.close()
-    out: List[EntryOut] = []
-    for r in rows:
-        out.append(EntryOut(
-            id=int(r[0]),
-            event_time=r[1].strftime("%Y-%m-%d %H:%M:%S") if r[1] else "",
-            event=r[2],
-            item_id=r[3],
-            from_holder=r[4],
-            to_holder=r[5],
-            by_user=r[6],
-            notes=r[7],
-        ))
-    return out
+        return {"id": new_id, "status": "ok"}
+    finally:
+        cur.close()
+        conn.close()
 
 # --------------------------------------------------------------------------
 # Dashboard (simple overview endpoint)
@@ -1450,7 +1607,7 @@ def dashboard_overview(user = Depends(get_current_user)):
     conn = get_conn()
     cur = conn.cursor(dictionary=True)
     try:
-        # Category totals based on item names
+        # Category totals based on item names (legacy; doesn't use explicit category)
         cur.execute("""
             SELECT
               CASE
@@ -1495,6 +1652,34 @@ def dashboard_overview(user = Depends(get_current_user)):
     finally:
         cur.close()
         conn.close()
+
+# --------------------------------------------------------------------------
+# Entries
+# --------------------------------------------------------------------------
+@app.get("/entries", response_model=List[EntryOut])
+def list_entries(limit: int = 200, user = Depends(get_current_user)):
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("""
+      SELECT id, event_time, event, item_id, from_holder, to_holder, by_user, notes
+      FROM entries
+      ORDER BY event_time DESC, id DESC
+      LIMIT %s
+    """, (int(limit),))
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+    out: List[EntryOut] = []
+    for r in rows:
+        out.append(EntryOut(
+            id=int(r[0]),
+            event_time=r[1].strftime("%Y-%m-%d %H:%M:%S") if r[1] else "",
+            event=r[2],
+            item_id=r[3],
+            from_holder=r[4],
+            to_holder=r[5],
+            by_user=r[6],
+            notes=r[7],
+        ))
+    return out
 
 # --------------------------------------------------------------------------
 # Services (routes)
@@ -1615,7 +1800,6 @@ def dashboard_summary(user = Depends(get_current_user)):
         cur.execute("SELECT COUNT(*) AS total_items FROM items")
         total_items = cur.fetchone()["total_items"] or 0
 
-        # items currently assigned (returned_at IS NULL)
         cur.execute("""
             SELECT COUNT(DISTINCT a.item_id) AS in_use
             FROM assignments a
@@ -1626,7 +1810,7 @@ def dashboard_summary(user = Depends(get_current_user)):
         available = total_items - in_use
         in_use_pct = round((in_use * 100.0 / total_items), 1) if total_items else 0.0
 
-        # Helper: normalise category names nicely for charts
+        # Prefer explicit category column; fall back to name
         category_case_expr = """
             CASE
                 WHEN COALESCE(i.category, '') <> '' THEN i.category
@@ -1668,7 +1852,7 @@ def dashboard_summary(user = Depends(get_current_user)):
                 "in_use_pct": round((used * 100.0 / total), 1) if total else 0.0,
             })
 
-        # ---------- By department/company ----------
+        # ---------- By department (company) ----------
         cur.execute(f"""
             SELECT
               COALESCE(i.department, 'Unassigned') AS department,

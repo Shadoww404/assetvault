@@ -45,6 +45,21 @@ function parseCsv(text) {
   return rows;
 }
 
+// Normalise any category-ish string into one of the allowed values
+function normalizeCategory(raw) {
+  if (!raw) return "Other";
+  const v = raw.toString().trim().toLowerCase();
+
+  if (v.startsWith("desk")) return "Desktop";
+  if (v.startsWith("lap")) return "Laptop";
+  if (v.startsWith("prin")) return "Printer";
+  if (v === "ups" || v.startsWith("ups")) return "UPS";
+  if (v === "other") return "Other";
+
+  // Fallback
+  return "Other";
+}
+
 export default function AdminPage() {
   // Data
   const [deps, setDeps] = useState([]);
@@ -85,7 +100,7 @@ export default function AdminPage() {
     department: "",
     owner: "",
     notes: "",
-    category: "Desktop",
+    category: "Other", // default
   };
   const [iForm, setIForm] = useState(emptyI);
 
@@ -297,19 +312,7 @@ export default function AdminPage() {
   };
 
   // ----- Items -----
-  const onItemEdit = (it) =>
-    setIForm({
-      item_id: it.item_id,
-      name: it.name || "",
-      quantity: it.quantity || 0,
-      serial_no: it.serial_no || "",
-      model_no: it.model_no || "",
-      department: it.department || "",
-      owner: it.owner || "",
-      notes: it.notes || "",
-      category: it.category || "Other",
-    });
-
+  // Generate a safe item_id automatically (no manual typing)
   const genItemId = (src) => {
     const base = (src || "").toString().trim() || "item";
     const norm = base
@@ -321,52 +324,71 @@ export default function AdminPage() {
     return `${norm || "item"}-${suffix}`;
   };
 
-  const createItemWithAutoId = async (rest) => {
-    const base = rest.serial_no || rest.model_no || rest.name || "item";
+  /**
+   * Create an item, handling both:
+   *  - CSV/inputs that already specify item_id
+   *  - normal UI form where we want auto-generated item_id
+   */
+  const createItemWithAutoId = async (input) => {
+    const normalizedCategory = normalizeCategory(
+      input.category || input.type || input.item_type
+    );
+
+    // Normalise quantity (CSV gives strings)
+    const basePayload = {
+      ...input,
+      quantity: input.quantity != null ? Number(input.quantity) || 0 : 0,
+      category: normalizedCategory,
+    };
+
+    // CASE 1: CSV / UI already provided an item_id → just use it
+    if (basePayload.item_id) {
+      await createItem(basePayload); // plain object, api.js will build FormData or JSON
+      return;
+    }
+
+    // CASE 2: no item_id → generate one and handle collisions
+    const base =
+      basePayload.serial_no ||
+      basePayload.model_no ||
+      basePayload.name ||
+      "item";
+
     for (let attempt = 0; attempt < 3; attempt++) {
       const newId = genItemId(base);
-      const fd = new FormData();
-      fd.set("item_id", newId);
-      fd.set("name", rest.name);
-      fd.set("quantity", String(rest.quantity || 0));
-      if (rest.serial_no) fd.set("serial_no", rest.serial_no);
-      if (rest.model_no) fd.set("model_no", rest.model_no);
-      if (rest.department) fd.set("department", rest.department);
-      if (rest.owner) fd.set("owner", rest.owner);
-      if (rest.notes) fd.set("notes", rest.notes);
-      if (rest.category) fd.set("category", rest.category);
+      const payload = { ...basePayload, item_id: newId };
 
       try {
-        await createItem(fd);
-        return;
+        await createItem(payload); // again: plain object
+        return; // success
       } catch (e) {
         const code = e?.response?.status;
         const msg = e?.response?.data?.detail || "";
+
+        // if backend says "already exists", try another suffix
         if (code === 409 && /already exists/i.test(msg)) {
           continue;
         }
-        throw e;
+        throw e; // some other error → bubble up
       }
     }
+
     throw new Error("Could not create item (ID collisions). Try again.");
   };
 
-  const onItemSubmit = async (e) => {
-    e.preventDefault();
-    setErr("");
-    try {
-      const { item_id, ...rest } = iForm;
-      if (item_id) {
-        await updateItem(item_id, rest);
-      } else {
-        await createItemWithAutoId(rest);
-      }
-      setIForm(emptyI);
-      await refresh();
-    } catch (e2) {
-      setErr(errorText(e2, "Item save failed"));
-    }
-  };
+  const onItemEdit = (it) =>
+    setIForm({
+      item_id: it.item_id || "",
+      name: it.name || "",
+      quantity: it.quantity ?? 0,
+      serial_no: it.serial_no || "",
+      model_no: it.model_no || "",
+      department: it.department || "",
+      owner: it.owner || "",
+      notes: it.notes || "",
+      // Try any possible field from backend
+      category: normalizeCategory(it.category || it.type || it.item_type),
+    });
 
   const onItemDelete = async (id) => {
     if (!confirm(`Delete item ${id}?`)) return;
@@ -375,6 +397,30 @@ export default function AdminPage() {
       await refresh();
     } catch (e2) {
       setErr(errorText(e2, "Item delete failed"));
+    }
+  };
+
+  const onItemSubmit = async (e) => {
+    e.preventDefault();
+    setErr("");
+    try {
+      const { item_id, category, ...restRaw } = iForm;
+      const normalizedCategory = normalizeCategory(category);
+
+      const rest = {
+        ...restRaw,
+        category: normalizedCategory,
+      };
+
+      if (item_id) {
+        await updateItem(item_id, rest); // UPDATE
+      } else {
+        await createItemWithAutoId(rest); // CREATE (auto ID)
+      }
+      setIForm(emptyI);
+      await refresh();
+    } catch (e2) {
+      setErr(errorText(e2, "Item save failed"));
     }
   };
 
@@ -503,9 +549,12 @@ export default function AdminPage() {
         }
         const qraw = row.quantity || row.qty || "0";
         const quantity = parseInt(qraw, 10) || 0;
-        const category = row.category || "Other";
+
+        const rawCat = row.category || row.type || row.item_type || "";
+        const category = normalizeCategory(rawCat);
 
         const rest = {
+          item_id: row.item_id || row.id || "", // use CSV id if present
           name,
           quantity,
           serial_no: row.serial_no || row.serial || "",
