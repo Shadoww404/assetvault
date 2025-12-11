@@ -12,12 +12,12 @@ import {
   transferAssignment,
   getActiveAssignment,
 } from "../api";
+import errorText from "../ui/errorText";
 import FancySelect from "../ui/FancySelect.jsx";
 
 function cx(...a) { return a.filter(Boolean).join(" "); }
 
 export default function ItemsPage() {
-  // ----- Core details form -----
   const [name, setName] = useState("");
   const [qty, setQty] = useState(1);
   const [serial, setSerial] = useState("");
@@ -27,24 +27,19 @@ export default function ItemsPage() {
   const [deps, setDeps] = useState([]);
   const [depId, setDepId] = useState("");
 
-  // Owner picker
   const [ownerQ, setOwnerQ] = useState("");
   const [ownerOpts, setOwnerOpts] = useState([]);
   const [ownerPick, setOwnerPick] = useState(null);
 
-  // After create
   const [createdId, setCreatedId] = useState("");
   const [photos, setPhotos] = useState([]);
 
-  // Busy / errors
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
-  // Photo inputs (two cards)
   const addPhotosCoreRef = useRef(null);
   const addPhotosTransferRef = useRef(null);
 
-  // ----- Transfer card -----
   const [tSerial, setTSerial] = useState("");
   const [tEquipName, setTEquipName] = useState("");
   const [tFromQ, setTFromQ] = useState("");
@@ -55,11 +50,10 @@ export default function ItemsPage() {
   const [tTo, setTTo] = useState(null);
   const [tDue, setTDue] = useState("");
   const [tNotes, setTNotes] = useState("");
-  const [tItemResolved, setTItemResolved] = useState(null); // { item_id, name }
+  const [tItemResolved, setTItemResolved] = useState(null);
   const [tBusy, setTBusy] = useState(false);
   const [tFromResolvedLabel, setTFromResolvedLabel] = useState("");
 
-  // --- Load deps once
   useEffect(() => {
     (async () => {
       try {
@@ -81,14 +75,12 @@ export default function ItemsPage() {
     return () => clearTimeout(timer);
   }, [ownerQ]);
 
-  // Auto department when owner picked
   useEffect(() => {
     if (!ownerPick) return;
     const match = deps.find(d => d.name === ownerPick.department_name);
     if (match) setDepId(match.id);
   }, [ownerPick, deps]);
 
-  // Refresh photos when we have an item id
   useEffect(() => {
     if (!createdId) return;
     (async () => {
@@ -99,18 +91,15 @@ export default function ItemsPage() {
     })();
   }, [createdId]);
 
-  // ----- Helpers -----
   async function resolveItemBySerial(serialNo) {
     if (!serialNo) return null;
     const { data } = await searchItems(serialNo);
     const exact = data.find(x => (x.serial_no || "").toLowerCase() === serialNo.toLowerCase());
     if (exact) return { item_id: exact.item_id, name: exact.name };
-    // fall back to first LIKE result
     if (data[0]) return { item_id: data[0].item_id, name: data[0].name };
     return null;
   }
 
-  // ----- Create item -----
   const onCreate = async (e) => {
     e.preventDefault();
     setErr(""); setBusy(true);
@@ -118,7 +107,7 @@ export default function ItemsPage() {
       const fd = new FormData();
       fd.set("name", name.trim());
       fd.set("quantity", String(qty || 0));
-      fd.set("serial_no", serial.trim()); // you want Serial required in UI
+      fd.set("serial_no", serial.trim());
       if (model.trim())  fd.set("model_no", model.trim());
       const depName = deps.find(d => d.id === depId)?.name || "";
       if (depName) fd.set("department", depName);
@@ -131,7 +120,7 @@ export default function ItemsPage() {
       setName(""); setQty(1); setSerial(""); setModel("");
       setOwnerPick(null); setOwnerQ("");
     } catch (e2) {
-      setErr(e2?.response?.data?.detail || "Failed to save");
+      setErr(errorText(e2, "Failed to save"));
     } finally {
       setBusy(false);
     }
@@ -145,7 +134,7 @@ export default function ItemsPage() {
       const { data } = await listPhotos(createdId);
       setPhotos(data);
     } catch (e2) {
-      setErr(e2?.response?.data?.detail || "Photo upload failed");
+      setErr(errorText(e2, "Photo upload failed"));
     } finally {
       setBusy(false);
     }
@@ -158,7 +147,8 @@ export default function ItemsPage() {
       await deletePhoto(createdId, pid);
       const { data } = await listPhotos(createdId);
       setPhotos(data);
-    } catch {
+    } catch (e2) {
+      setErr(errorText(e2, "Delete failed"));
     } finally {
       setBusy(false);
     }
@@ -200,7 +190,6 @@ export default function ItemsPage() {
         } else {
           setTFromResolvedLabel("");
         }
-        // prefill equipment name if blank
         if (found && !tEquipName) setTEquipName(found.name || "");
       } catch {
         setTItemResolved(null);
@@ -210,12 +199,10 @@ export default function ItemsPage() {
     return () => clearTimeout(timer);
   }, [tSerial]); // eslint-disable-line
 
-  // Transfer submit
   const onTransfer = async (e) => {
     e.preventDefault();
     setErr(""); setTBusy(true);
     try {
-      // backend verifies that serial belongs to the selected FROM person
       await transferAssignment({
         serial_no: tSerial.trim(),
         from_person_id: tFrom?.id,
@@ -225,16 +212,14 @@ export default function ItemsPage() {
         item_name_for_log: tEquipName || null,
       });
 
-      // clear
       setTTo(null); setTToQ(""); setTFrom(null); setTFromQ("");
       setTDue(""); setTNotes("");
-      // refresh current holder text
       if (tItemResolved?.item_id) {
         const { data } = await getActiveAssignment(tItemResolved.item_id);
         setTFromResolvedLabel(data?.person_name || "");
       }
     } catch (e2) {
-      setErr(e2?.response?.data?.detail || "Transfer failed");
+      setErr(errorText(e2, "Transfer failed"));
     } finally {
       setTBusy(false);
     }
@@ -243,7 +228,6 @@ export default function ItemsPage() {
   const onUploadTransfer = async (files) => {
     if (!files?.length) return;
     try {
-      // prefer resolved item id from serial
       let targetId = tItemResolved?.item_id;
       if (!targetId && tSerial) {
         const found = await resolveItemBySerial(tSerial.trim());
@@ -255,9 +239,8 @@ export default function ItemsPage() {
       }
       setTBusy(true);
       await uploadPhotos(targetId, files);
-      // if you want, show nothing else here; photos are attached to that item
     } catch (e2) {
-      setErr(e2?.response?.data?.detail || "Photo upload failed");
+      setErr(errorText(e2, "Photo upload failed"));
     } finally {
       setTBusy(false);
     }
@@ -339,7 +322,6 @@ export default function ItemsPage() {
             <div className="control full btn-row">
               <button className="btn primary">Save</button>
 
-              {/* Add photos on this card */}
               <input ref={addPhotosCoreRef} type="file" accept="image/*" multiple hidden
                      onChange={(e)=>onUploadCore(Array.from(e.target.files||[]))}/>
               <button type="button" className="btn"
@@ -438,7 +420,6 @@ export default function ItemsPage() {
             <div className="control full btn-row">
               <button className="btn primary" disabled={!tSerial || !tFrom || !tTo}>Transfer</button>
 
-              {/* Add photos from this card (to the resolved item) */}
               <input ref={addPhotosTransferRef} type="file" accept="image/*" multiple hidden
                      onChange={(e)=>onUploadTransfer(Array.from(e.target.files||[]))}/>
               <button type="button" className="btn"

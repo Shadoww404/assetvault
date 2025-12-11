@@ -1,0 +1,17 @@
+#---- Core Framework ----
+fastapi==0.110.0
+uvicorn[standard]==0.29.0
+
+# ---- Database ----
+mysql-connector-python==8.3.0
+
+# ---- Security ----
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+bcrypt==3.2.2
+cffi==2.0.0
+pycparser==2.23
+
+# ---- File uploads, env ----
+python-multipart==0.0.9
+python-dotenv==1.0.1

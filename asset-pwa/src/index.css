@@ -588,6 +588,45 @@ small { font-size: 12px; }
 .list .row .name { font-weight: 600; }
 .list .row .meta { font-size: 12px; color: #6b7280; }
 
+/* Layout for the Assignments page */
+.assign-layout {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 16px;
+  align-items: flex-start;
+  /* Make the whole layout roughly viewport height minus header */
+  min-height: calc(100vh - 140px);
+}
+
+/* Make the left card stretch vertically */
+.assign-layout > aside.card {
+  height: 100%;
+}
+
+/* Make the card body a column so the list can flex */
+.assign-layout > aside.card .card-body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* People list: scroll instead of growing the page forever */
+.assign-layout .list.scroll {
+  margin-top: 12px;
+  flex: 1;
+  overflow-y: auto;
+  /* Nice touch: prevent horizontal scrollbar */
+  overflow-x: hidden;
+}
+
+/* Optional: small max-height on very small screens */
+@media (max-height: 680px) {
+  .assign-layout .list.scroll {
+    max-height: 380px;
+  }
+}
+
+
 /* Alerts */
 .alert {
   margin: 8px 0 12px;

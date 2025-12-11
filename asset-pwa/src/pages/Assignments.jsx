@@ -10,9 +10,9 @@ import {
   returnAssignment,
   transferAssignment,
 } from "../api";
+import errorText from "../ui/errorText";
 import FancySelect from "../ui/FancySelect.jsx";
 
-// utils
 function cls(...c) {
   return c.filter(Boolean).join(" ");
 }
@@ -30,32 +30,29 @@ const initials = (name = "") =>
     .join("");
 
 export default function AssignmentsPage() {
-  // filters
   const [deps, setDeps] = useState([]);
   const [depId, setDepId] = useState("");
   const [q, setQ] = useState("");
 
-  // people rail
   const [people, setPeople] = useState([]);
   const [loadingPeople, setLoadingPeople] = useState(false);
 
-  // selection
   const [pid, setPid] = useState(null);
   const [person, setPerson] = useState(null);
   const [history, setHistory] = useState([]);
 
-  // ui state
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [ok, setOk] = useState(""); // ✅ success message
 
-  // new assignment
+  // person-assign form
   const [findQ, setFindQ] = useState("");
   const [findOpts, setFindOpts] = useState([]);
   const [picked, setPicked] = useState(null);
   const [due, setDue] = useState("");
   const [notes, setNotes] = useState("");
 
-  // transfer modal (when viewing a person)
+  // modal transfer (when viewing a person)
   const [xferOpen, setXferOpen] = useState(false);
   const [xferItemId, setXferItemId] = useState("");
   const [xferQ, setXferQ] = useState("");
@@ -64,21 +61,28 @@ export default function AssignmentsPage() {
   const [xferDue, setXferDue] = useState("");
   const [xferNotes, setXferNotes] = useState("");
 
-  // --- Quick Transfer (works without selecting a person) ---
+  // quick transfer (no person selected)
   const [qtItemQ, setQtItemQ] = useState("");
   const [qtItemOpts, setQtItemOpts] = useState([]);
   const [qtItem, setQtItem] = useState(null);
-
   const [qtPersonQ, setQtPersonQ] = useState("");
   const [qtPeople, setQtPeople] = useState([]);
   const [qtPerson, setQtPerson] = useState(null);
-
   const [qtDue, setQtDue] = useState("");
   const [qtNotes, setQtNotes] = useState("");
   const [qtBusy, setQtBusy] = useState(false);
 
-  const active = useMemo(() => history.filter((h) => !h.returned_at), [history]);
-  const past = useMemo(() => history.filter((h) => !!h.returned_at), [history]);
+  const active = useMemo(
+    () => history.filter((h) => !h.returned_at),
+    [history]
+  );
+
+  // auto-hide success after a few seconds
+  useEffect(() => {
+    if (!ok) return;
+    const t = setTimeout(() => setOk(""), 4000);
+    return () => clearTimeout(t);
+  }, [ok]);
 
   // deps
   useEffect(() => {
@@ -86,9 +90,7 @@ export default function AssignmentsPage() {
       try {
         const { data } = await listDepartments();
         setDeps([{ id: "", name: "All departments" }, ...data]);
-      } catch {
-        /* ignore */
-      }
+      } catch {}
     })();
   }, []);
 
@@ -105,7 +107,7 @@ export default function AssignmentsPage() {
         });
         if (on) setPeople(data);
       } catch (e) {
-        if (on) setErr(e?.response?.data?.detail || "Failed to load people");
+        if (on) setErr(errorText(e, "Failed to load people"));
       } finally {
         if (on) setLoadingPeople(false);
       }
@@ -126,6 +128,7 @@ export default function AssignmentsPage() {
     (async () => {
       setBusy(true);
       setErr("");
+      setOk("");
       try {
         const [{ data: p }, { data: h }] = await Promise.all([
           getPerson(pid),
@@ -136,7 +139,16 @@ export default function AssignmentsPage() {
         setHistory(h);
       } catch (e) {
         if (!on) return;
-        setErr(e?.response?.data?.detail || "Failed to load person");
+        const status = e?.response?.status;
+        const detail = errorText(e, "Failed to load person");
+        console.error("getPerson/getPersonHistory failed:", e);
+        setErr(detail);
+        setOk("");
+        if (status === 404) {
+          setPid(null);
+          setPerson(null);
+          setHistory([]);
+        }
       } finally {
         if (!on) return;
         setBusy(false);
@@ -147,7 +159,7 @@ export default function AssignmentsPage() {
     };
   }, [pid]);
 
-  // item typeahead (assign)
+  // typeaheads
   useEffect(() => {
     const t = setTimeout(async () => {
       if (!findQ || findQ.length < 2) {
@@ -157,14 +169,11 @@ export default function AssignmentsPage() {
       try {
         const { data } = await searchItemsLite(findQ);
         setFindOpts(data.slice(0, 8));
-      } catch {
-        /**/
-      }
+      } catch {}
     }, 220);
     return () => clearTimeout(t);
   }, [findQ]);
 
-  // people typeahead (transfer modal)
   useEffect(() => {
     const t = setTimeout(async () => {
       if (!xferQ || xferQ.length < 2) {
@@ -174,14 +183,11 @@ export default function AssignmentsPage() {
       try {
         const { data } = await listPeople({ q: xferQ, limit: 8 });
         setXferPeople(data);
-      } catch {
-        /**/
-      }
+      } catch {}
     }, 220);
     return () => clearTimeout(t);
   }, [xferQ]);
 
-  // --- Quick Transfer typeaheads ---
   useEffect(() => {
     const t = setTimeout(async () => {
       if (!qtItemQ || qtItemQ.length < 2) {
@@ -191,9 +197,7 @@ export default function AssignmentsPage() {
       try {
         const { data } = await searchItemsLite(qtItemQ);
         setQtItemOpts(data.slice(0, 8));
-      } catch {
-        /**/
-      }
+      } catch {}
     }, 220);
     return () => clearTimeout(t);
   }, [qtItemQ]);
@@ -207,9 +211,7 @@ export default function AssignmentsPage() {
       try {
         const { data } = await listPeople({ q: qtPersonQ, limit: 8 });
         setQtPeople(data);
-      } catch {
-        /**/
-      }
+      } catch {}
     }, 220);
     return () => clearTimeout(t);
   }, [qtPersonQ]);
@@ -219,20 +221,38 @@ export default function AssignmentsPage() {
     try {
       const { data } = await getPersonHistory(pid);
       setHistory(data);
-    } catch {
-      /**/
-    }
+    } catch {}
   };
 
   // actions
   const onAssign = async (e) => {
     e.preventDefault();
-    if (!pid || !picked) return;
-    setBusy(true);
     setErr("");
+    setOk("");
+
+    if (!pid) {
+      setErr("Pick a person on the left first.");
+      return;
+    }
+
+    // Allow both:
+    // - selected item from dropdown (picked.item_id)
+    // - directly typed item id in the input (findQ)
+    const typedId = findQ.trim();
+    const itemId =
+      (picked && picked.item_id) ||
+      (typeof picked === "string" ? picked : null) ||
+      (typedId ? typedId : null);
+
+    if (!itemId) {
+      setErr("Type or select an item to assign.");
+      return;
+    }
+
+    setBusy(true);
     try {
       await assignToPerson({
-        item_id: picked.item_id || picked.id || picked,
+        item_id: itemId,
         person_id: pid,
         due_back_date: due || null,
         notes: notes || null,
@@ -243,22 +263,39 @@ export default function AssignmentsPage() {
       setDue("");
       setNotes("");
       await refreshHistory();
+      setOk(
+        `Assigned ${itemId} to ${person?.full_name || "selected person"} successfully.`
+      ); // ✅ success message
     } catch (e2) {
-      setErr(e2?.response?.data?.detail || "Assignment failed");
+      console.error("Assignment failed:", e2);
+      setErr(errorText(e2, "Assignment failed"));
+      setOk("");
     } finally {
       setBusy(false);
     }
   };
 
   const onReturn = async (row) => {
-    if (!confirm(`Mark ${row.item_id} returned from ${person?.full_name}?`)) return;
+    if (!confirm(`Mark ${row.item_id} returned from ${person?.full_name}?`))
+      return;
     setBusy(true);
     setErr("");
+    setOk("");
     try {
-      await returnAssignment({ assignment_id: row.id, item_id: row.item_id, notes: "" });
+      await returnAssignment({
+        assignment_id: row.id,
+        item_id: row.item_id,
+        notes: "",
+      });
       await refreshHistory();
+      setOk(
+        `Marked ${row.item_id} returned from ${
+          person?.full_name || "person"
+        }.`
+      );
     } catch (e2) {
-      setErr(e2?.response?.data?.detail || "Return failed");
+      setErr(errorText(e2, "Return failed"));
+      setOk("");
     } finally {
       setBusy(false);
     }
@@ -279,6 +316,7 @@ export default function AssignmentsPage() {
     if (!xferItemId || !xferTo) return;
     setBusy(true);
     setErr("");
+    setOk("");
     try {
       await transferAssignment({
         item_id: xferItemId,
@@ -288,19 +326,23 @@ export default function AssignmentsPage() {
       });
       setXferOpen(false);
       await refreshHistory();
+      setOk(
+        `Transferred ${xferItemId} to ${xferTo.full_name || "new holder"}.`
+      );
     } catch (e2) {
-      setErr(e2?.response?.data?.detail || "Transfer failed");
+      setErr(errorText(e2, "Transfer failed"));
+      setOk("");
     } finally {
       setBusy(false);
     }
   };
 
-  // Quick Transfer submit (no selection required)
   const onQuickTransfer = async (e) => {
     e.preventDefault();
     if (!qtItem || !qtPerson) return;
     setQtBusy(true);
     setErr("");
+    setOk("");
     try {
       await transferAssignment({
         item_id: qtItem.item_id || qtItem,
@@ -308,8 +350,6 @@ export default function AssignmentsPage() {
         due_back_date: qtDue || null,
         notes: qtNotes || null,
       });
-
-      // reset form
       setQtItemQ("");
       setQtItemOpts([]);
       setQtItem(null);
@@ -318,17 +358,20 @@ export default function AssignmentsPage() {
       setQtPerson(null);
       setQtDue("");
       setQtNotes("");
-
-      // if currently viewing that person, refresh
       if (pid === qtPerson.id) await refreshHistory();
+      setOk(
+        `Transferred ${qtItem.item_id || ""} to ${
+          qtPerson.full_name || "person"
+        }.`
+      );
     } catch (e2) {
-      setErr(e2?.response?.data?.detail || "Transfer failed");
+      setErr(errorText(e2, "Transfer failed"));
+      setOk("");
     } finally {
       setQtBusy(false);
     }
   };
 
-  // compute FancySelect options once
   const depOptions = useMemo(
     () => deps.map((d) => ({ value: d.id ?? "", label: d.name })),
     [deps]
@@ -336,17 +379,18 @@ export default function AssignmentsPage() {
 
   return (
     <div className="page">
-      {/* header */}
       <div className="page-head">
         <div>
           <h1 className="page-title">Assignments</h1>
           <p className="page-subtitle">
-            Track who has which device. Assign, return, and transfer in one place.
+            Track who has which device. Assign, return, and transfer in one
+            place.
           </p>
         </div>
       </div>
 
       {err && <div className="alert error">{err}</div>}
+      {ok && <div className="alert success">{ok}</div>}{/* ✅ green success */}
 
       <div className="assign-layout">
         {/* Left rail */}
@@ -357,15 +401,15 @@ export default function AssignmentsPage() {
                 <label>Department</label>
                 <FancySelect
                   options={depOptions}
-                  // make onChange tolerant to either raw value or option
                   onChange={(v) =>
-                    setDepId(typeof v === "object" ? (v?.value ?? "") : (v ?? ""))
+                    setDepId(
+                      typeof v === "object" ? v?.value ?? "" : v ?? ""
+                    )
                   }
                   value={depId}
                   placeholder="All departments"
                 />
               </div>
-
               <div className="control">
                 <label>Search people</label>
                 <input
@@ -373,6 +417,7 @@ export default function AssignmentsPage() {
                   value={q}
                   onChange={(e) => setQ(e.target.value)}
                   placeholder="name or code…"
+                  autoComplete="on" // ✅ allow browser suggestions
                 />
               </div>
             </div>
@@ -382,7 +427,6 @@ export default function AssignmentsPage() {
               {!loadingPeople && people.length === 0 && (
                 <div className="muted">No people</div>
               )}
-
               {people.map((p) => (
                 <button
                   key={p.id}
@@ -406,20 +450,23 @@ export default function AssignmentsPage() {
 
         {/* Main */}
         <main className="content">
-          {/* Quick Transfer card (works without selecting a person) */}
+          {/* Quick Transfer card */}
           <div className="card card-elev">
             <div className="card-head">
               <div className="stack">
-                <h3 className="card-title">Quick Transfer</h3>
+                <h3 className="card-title">Equipment Transfer</h3>
                 <div className="muted">
-                  Move any saved item to a person (e.g., “IT Repairs”) in one step.
+                  Move any saved item to a person (e.g., “IT Repairs”) in one
+                  step.
                 </div>
               </div>
             </div>
-            <form onSubmit={onQuickTransfer} className={qtBusy ? "disabled" : ""}>
+            <form
+              onSubmit={onQuickTransfer}
+              className={qtBusy ? "disabled" : ""}
+            >
               <div className="card-body">
                 <div className="grid-two">
-                  {/* Item picker */}
                   <div className="control">
                     <label>Item</label>
                     <div className="typeahead">
@@ -431,7 +478,7 @@ export default function AssignmentsPage() {
                           setQtItem(null);
                         }}
                         placeholder="Type item id / name / serial…"
-                        autoComplete="off"
+                        autoComplete="on" // ✅ suggestions
                       />
                       {qtItemQ && qtItemOpts.length > 0 && (
                         <div className="menu">
@@ -442,7 +489,9 @@ export default function AssignmentsPage() {
                               className="menu-item"
                               onClick={() => {
                                 setQtItem(it);
-                                setQtItemQ(`${it.item_id} — ${it.name || ""}`);
+                                setQtItemQ(
+                                  `${it.item_id} — ${it.name || ""}`
+                                );
                                 setQtItemOpts([]);
                               }}
                             >
@@ -455,7 +504,6 @@ export default function AssignmentsPage() {
                     </div>
                   </div>
 
-                  {/* Person picker */}
                   <div className="control">
                     <label>To person</label>
                     <div className="typeahead">
@@ -467,7 +515,7 @@ export default function AssignmentsPage() {
                           setQtPerson(null);
                         }}
                         placeholder='e.g. "IT Repairs" or a person name'
-                        autoComplete="off"
+                        autoComplete="on" // ✅ suggestions
                       />
                       {qtPersonQ && qtPeople.length > 0 && (
                         <div className="menu">
@@ -514,12 +562,16 @@ export default function AssignmentsPage() {
                       value={qtNotes}
                       onChange={(e) => setQtNotes(e.target.value)}
                       placeholder="optional…"
+                      autoComplete="on" // ✅ suggestions
                     />
                   </div>
                 </div>
               </div>
               <div className="card-foot t-right">
-                <button className="btn primary" disabled={qtBusy || !qtItem || !qtPerson}>
+                <button
+                  className="btn primary"
+                  disabled={qtBusy || !qtItem || !qtPerson}
+                >
                   Transfer
                 </button>
               </div>
@@ -529,7 +581,9 @@ export default function AssignmentsPage() {
           {!pid && (
             <div className="card">
               <div className="card-body">
-                <div className="muted">Pick a person on the left to view details.</div>
+                <div className="muted">
+                  Pick a person on the left to view details.
+                </div>
               </div>
             </div>
           )}
@@ -540,14 +594,15 @@ export default function AssignmentsPage() {
                 <div className="card-head">
                   <div className="stack">
                     <h3 className="card-title">{person.full_name}</h3>
-                    <div className="muted">{person.department_name || ""}</div>
+                    <div className="muted">
+                      {person.department_name || ""}
+                    </div>
                   </div>
                   <div className="pill">{active.length} active</div>
                 </div>
 
                 <div className="card-body">
                   <div className="grid-two">
-                    {/* Current devices */}
                     <section>
                       <div className="section-head">
                         <h4>Current devices</h4>
@@ -574,10 +629,16 @@ export default function AssignmentsPage() {
                                 <td>{a.due_back_date || "—"}</td>
                                 <td className="t-right">
                                   <div className="btn-row">
-                                    <button className="btn ghost" onClick={() => openTransfer(a)}>
+                                    <button
+                                      className="btn ghost"
+                                      onClick={() => openTransfer(a)}
+                                    >
                                       Transfer
                                     </button>
-                                    <button className="btn danger" onClick={() => onReturn(a)}>
+                                    <button
+                                      className="btn danger"
+                                      onClick={() => onReturn(a)}
+                                    >
                                       Return
                                     </button>
                                   </div>
@@ -589,12 +650,14 @@ export default function AssignmentsPage() {
                       )}
                     </section>
 
-                    {/* Assign new */}
                     <section>
                       <div className="section-head">
                         <h4>Assign new device</h4>
                       </div>
-                      <form onSubmit={onAssign} className={busy ? "disabled" : ""}>
+                      <form
+                        onSubmit={onAssign}
+                        className={busy ? "disabled" : ""}
+                      >
                         <div className="control">
                           <label>Find item</label>
                           <div className="typeahead">
@@ -606,7 +669,7 @@ export default function AssignmentsPage() {
                                 setPicked(null);
                               }}
                               placeholder="Type item id, name, serial…"
-                              autoComplete="off"
+                              autoComplete="on" // ✅ suggestions
                             />
                             {findQ && findOpts.length > 0 && (
                               <div className="menu">
@@ -617,7 +680,9 @@ export default function AssignmentsPage() {
                                     className="menu-item"
                                     onClick={() => {
                                       setPicked(it);
-                                      setFindQ(`${it.item_id} — ${it.name || ""}`);
+                                      setFindQ(
+                                        `${it.item_id} — ${it.name || ""}`
+                                      );
                                       setFindOpts([]);
                                     }}
                                   >
@@ -633,7 +698,8 @@ export default function AssignmentsPage() {
                         <div className="grid-two">
                           <div className="control">
                             <label>
-                              Due date <span className="muted">(optional)</span>
+                              Due date{" "}
+                              <span className="muted">(optional)</span>
                             </label>
                             <input
                               className="input"
@@ -649,12 +715,17 @@ export default function AssignmentsPage() {
                               value={notes}
                               onChange={(e) => setNotes(e.target.value)}
                               placeholder="optional…"
+                              autoComplete="on" // ✅ suggestions
                             />
                           </div>
                         </div>
 
                         <div className="btn-row">
-                          <button className="btn primary" disabled={busy || !picked}>
+                          <button
+                            className="btn primary"
+                            // now only require some text in the box, not a picked suggestion
+                            disabled={busy || !findQ.trim()}
+                          >
                             Assign
                           </button>
                         </div>
@@ -664,7 +735,6 @@ export default function AssignmentsPage() {
                 </div>
               </div>
 
-              {/* History */}
               <div className="card">
                 <div className="card-head">
                   <h3 className="card-title">History</h3>
@@ -711,7 +781,7 @@ export default function AssignmentsPage() {
         </main>
       </div>
 
-      {/* Transfer modal (when viewing a person) */}
+      {/* Transfer modal */}
       {xferOpen && (
         <div className="modal on">
           <div className="modal-card">
@@ -735,7 +805,7 @@ export default function AssignmentsPage() {
                         setXferTo(null);
                       }}
                       placeholder="Search…"
-                      autoComplete="off"
+                      autoComplete="on" // ✅ suggestions
                     />
                     {xferQ && xferPeople.length > 0 && (
                       <div className="menu">
@@ -764,7 +834,8 @@ export default function AssignmentsPage() {
                 <div className="grid-two">
                   <div className="control">
                     <label>
-                      New due date <span className="muted">(optional)</span>
+                      New due date{" "}
+                      <span className="muted">(optional)</span>
                     </label>
                     <input
                       className="input"
@@ -780,13 +851,18 @@ export default function AssignmentsPage() {
                       value={xferNotes}
                       onChange={(e) => setXferNotes(e.target.value)}
                       placeholder="optional…"
+                      autoComplete="on" // ✅ suggestions
                     />
                   </div>
                 </div>
               </div>
 
               <div className="modal-foot">
-                <button type="button" className="btn" onClick={() => setXferOpen(false)}>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setXferOpen(false)}
+                >
                   Cancel
                 </button>
                 <button className="btn primary" disabled={busy || !xferTo}>
